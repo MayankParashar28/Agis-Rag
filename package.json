@@ -1,0 +1,10 @@
+{
+  "name": "enterprise-rag-root",
+  "version": "1.0.0",
+  "scripts": {
+    "start-redis": "redis-server --daemonize yes || true",
+    "start-backend": "cd backend && .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000",
+    "start-frontend": "cd frontend && npm run dev",
+    "dev": "npm run start-redis && npx -y concurrently \"npm run start-backend\" \"npm run start-frontend\""
+  }
+}
