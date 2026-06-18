@@ -648,7 +648,7 @@ function ChatPageContent() {
   };
 
   return (
-    <div className="mt-4 h-[calc(100dvh-6.5rem)] md:mt-6 md:h-[calc(100dvh-5.5rem)] flex gap-4 md:gap-6 overflow-hidden relative">
+    <div className="mt-4 h-[calc(100dvh-7rem)] md:mt-6 md:h-[calc(100vh-7.5rem)] flex gap-4 md:gap-6 overflow-hidden relative">
       {/* MOBILE LEFT: Conversation sidebar drawer */}
       {showMobileSidebar && (
         <>
