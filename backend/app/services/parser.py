@@ -1,4 +1,5 @@
 import os
+import asyncio
 from typing import List, Dict, Any
 from fastapi import HTTPException
 from app.core.config import settings
@@ -9,32 +10,39 @@ class DocumentParser:
         self.api_key = settings.LLAMAPARSE_API_KEY
         if self.api_key:
             logger.info("LlamaParse API Key found. Using LlamaParse for document parsing.")
-            from llama_parse import LlamaParse
-            # Initialize LlamaParse
-            self.parser = LlamaParse(
-                api_key=self.api_key,
-                result_type="markdown",  # markdown preserves formatting, tables, etc.
-                num_workers=4,
-                verbose=True,
-                language="en"
-            )
         else:
             logger.warning("LlamaParse API Key not found. Falling back to local/standard parsers.")
-            self.parser = None
+
+    def get_parser(self):
+        if not self.api_key:
+            return None
+        from llama_parse import LlamaParse
+        # Create a fresh parser instance to ensure it binds to the current event loop in worker processes
+        return LlamaParse(
+            api_key=self.api_key,
+            result_type="markdown",  # markdown preserves formatting, tables, etc.
+            num_workers=4,
+            verbose=True,
+            language="en"
+        )
 
     async def parse_file(self, file_path: str, filename: str) -> List[Dict[str, Any]]:
         """
         Parses a file and returns a list of dictionaries with content and metadata (e.g. page numbers).
         """
         ext = os.path.splitext(filename)[1].lower()
+        parser = self.get_parser()
         
         # If LlamaParse is enabled, use it for PDFs and Word docs
-        if self.parser and ext in [".pdf", ".docx"]:
+        if parser and ext in [".pdf", ".docx"]:
             try:
                 logger.info(f"Parsing {filename} with LlamaParse...")
-                # LlamaParse parse_documents is synchronous/blocking, run it in a thread if needed
-                # For simplicity, we call load_data
-                documents = self.parser.load_data(file_path)
+                # Run the blocking load_data call in a separate thread to keep loop responsive
+                documents = await asyncio.to_thread(parser.load_data, file_path)
+                
+                if not documents:
+                    logger.warning("LlamaParse returned no documents. Falling back to local parsing.")
+                    return await self._local_parse(file_path, filename, ext)
                 
                 parsed_pages = []
                 for idx, doc in enumerate(documents):

@@ -445,7 +445,7 @@ function UploadPageContent() {
 
       {/* Chunk Inspector Modal Dialog */}
       {inspectorDoc && (
-        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 md:pl-72">
           <div className="w-full max-w-4xl glass border border-card-border rounded-3xl p-6 relative animate-scale-up flex flex-col max-h-[85vh]">
             <button
               onClick={() => setInspectorDoc(null)}
@@ -495,13 +495,13 @@ function UploadPageContent() {
                   <p className="text-sm">No matching chunks found.</p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {filteredChunks.map((chunk) => (
                     <div
                       key={chunk.id}
-                      className="p-4 bg-background/40 border border-card-border/60 rounded-2xl space-y-3 flex flex-col justify-between"
+                      className="p-6 bg-background/40 border border-card-border/60 rounded-2xl space-y-4 flex flex-col justify-between hover:border-primary/50 hover:bg-background/60 transition-all duration-300"
                     >
-                      <div className="flex items-center justify-between text-[10px] font-bold text-text-muted border-b border-card-border/30 pb-2">
+                      <div className="flex items-center justify-between text-[10px] font-bold text-text-muted border-b border-card-border/30 pb-3">
                         <span className="px-2 py-0.5 bg-primary/10 border border-primary/25 rounded-md text-primary">
                           Chunk #{chunk.chunk_index ?? 0}
                         </span>
@@ -515,7 +515,7 @@ function UploadPageContent() {
                         </span>
                       </div>
                       
-                      <p className="text-xs leading-relaxed text-muted-foreground font-mono whitespace-pre-wrap flex-1 max-h-48 overflow-y-auto">
+                      <p className="text-xs leading-relaxed text-muted-foreground font-mono whitespace-pre-wrap flex-1 max-h-48 overflow-y-auto pr-1">
                         {chunk.content}
                       </p>
                     </div>

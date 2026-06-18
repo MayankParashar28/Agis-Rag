@@ -1288,20 +1288,20 @@ function ChatPageContent() {
                     <div
                       key={chunk.id}
                       id={`chunk-page-${chunk.page_number}`}
-                      className={`p-4 rounded-2xl border text-xs leading-relaxed transition-all duration-300 ${
+                      className={`p-5 rounded-2xl border text-xs leading-relaxed transition-all duration-300 hover:border-primary/50 hover:bg-background/60 ${
                         isTargetPage
-                          ? "bg-secondary/10 border-secondary/50 shadow-md shadow-secondary/5 accent-glow"
+                          ? "bg-secondary/15 border-secondary/50 shadow-md shadow-secondary/5 accent-glow"
                           : "bg-card/25 border-card-border/60"
                       }`}
                     >
-                      <div className="flex justify-between items-center mb-2 pb-1.5 border-b border-card-border/30 text-[10px] text-text-muted font-mono">
+                      <div className="flex justify-between items-center mb-3 pb-2 border-b border-card-border/30 text-[10px] text-text-muted font-mono">
                         <span className="flex items-center gap-1">
                           <FileText className="w-3.5 h-3.5 text-secondary" />
                           <span>Page {chunk.page_number || "N/A"}</span>
                         </span>
                         <span>Index {chunk.chunk_index || 0}</span>
                       </div>
-                      <p className="text-[11px] text-muted-foreground whitespace-pre-wrap leading-normal font-sans">
+                      <p className="text-[11px] text-muted-foreground whitespace-pre-wrap leading-normal font-sans pr-1">
                         {chunk.content}
                       </p>
                     </div>
@@ -1316,7 +1316,7 @@ function ChatPageContent() {
 
       {/* CREATE/EDIT STICKY NOTE MODAL DIALOG */}
       {isNoteModalOpen && (
-        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 md:pl-72">
           <div className="w-full max-w-md bg-card border border-card-border rounded-3xl p-6 shadow-2xl relative overflow-hidden animate-zoom-in">
             <div className="absolute top-0 right-0 w-32 h-32 bg-accent/10 rounded-full blur-3xl pointer-events-none" />
             <div className="flex justify-between items-center mb-4 pb-2 border-b border-card-border/50">

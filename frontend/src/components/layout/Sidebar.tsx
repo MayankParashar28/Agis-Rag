@@ -60,13 +60,21 @@ export default function Sidebar({ mobileMenuOpen, setMobileMenuOpen }: { mobileM
       <aside className={`w-72 bg-card border-r border-card-border/10 flex flex-col justify-between h-screen fixed md:sticky top-0 z-[90] transition-transform duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] md:translate-x-0 ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div>
         {/* Logo */}
-        <div className="p-8 border-b border-card-border/10 flex flex-col space-y-4">
-          <div className="w-8 h-px bg-foreground" />
-          <div>
+        <div className="p-8 border-b border-card-border/10 flex flex-col space-y-4 relative overflow-hidden">
+          <div className="w-8 h-px bg-foreground z-10" />
+          <div className="relative z-10">
             <span className="font-serif text-2xl text-foreground block leading-[0.9] tracking-tight">
               Aegis <span className="italic text-accent">RAG</span>
             </span>
             <span className="text-[10px] tracking-[0.2em] uppercase text-muted-foreground mt-2 block">Enterprise Platform</span>
+          </div>
+          {/* Logo Watermark behind branding */}
+          <div className="absolute left-8 top-1/2 -translate-y-1/2 w-32 h-32 opacity-[0.05] pointer-events-none select-none z-0">
+            <img 
+              src="/logo.png" 
+              alt="AGIS Logo Watermark" 
+              className="w-full h-full object-contain" 
+            />
           </div>
         </div>
 

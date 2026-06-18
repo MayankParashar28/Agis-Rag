@@ -18,12 +18,13 @@ from app.schemas.knowledge import DocumentResponse, DocumentChunkResponse
 from app.services.parser import document_parser
 from app.services.indexer import document_indexer
 from app.core.logging import logger
-from app.worker import process_document_task
+from app.worker import process_document_task, queue_name
 
 router = APIRouter()
 
 # Permanent directory to store documents (inside the workspace)
-UPLOAD_DIR = "/Users/mayankparashar/Desktop/enterprise-rag/uploads"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Background task to parse, chunk, and index the document
@@ -128,12 +129,15 @@ async def upload_document(
     await db.refresh(db_doc)
 
     # 5. Delegate processing to Celery background task
-    process_document_task.delay(
-        doc_id_str=str(db_doc.id),
-        file_path=dest_path,
-        filename=file.filename,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap
+    process_document_task.apply_async(
+        args=[
+            str(db_doc.id),
+            dest_path,
+            file.filename,
+            chunk_size,
+            chunk_overlap
+        ],
+        queue=queue_name
     )
 
     return db_doc
@@ -262,10 +266,13 @@ async def reindex_document(
     await db.refresh(doc)
 
     # Start indexing in background via Celery
-    process_document_task.delay(
-        doc_id_str=str(doc.id),
-        file_path=local_path,
-        filename=doc.filename
+    process_document_task.apply_async(
+        args=[
+            str(doc.id),
+            local_path,
+            doc.filename
+        ],
+        queue=queue_name
     )
 
     return doc
@@ -377,10 +384,13 @@ async def admin_reindex_document(
     await db.commit()
     await db.refresh(doc)
 
-    process_document_task.delay(
-        doc_id_str=str(doc.id),
-        file_path=local_path,
-        filename=doc.filename
+    process_document_task.apply_async(
+        args=[
+            str(doc.id),
+            local_path,
+            doc.filename
+        ],
+        queue=queue_name
     )
 
     return {"status": "success", "message": "Reindexing scheduled successfully."}

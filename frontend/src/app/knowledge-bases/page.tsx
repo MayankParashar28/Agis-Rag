@@ -231,7 +231,7 @@ export default function KnowledgeBasesPage() {
 
       {/* Modal Dialog */}
       {isModalOpen && (
-        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 md:pl-72">
           <div className="w-full max-w-md glass border border-card-border rounded-3xl p-6 relative animate-scale-up">
             <button
               onClick={() => setIsModalOpen(false)}

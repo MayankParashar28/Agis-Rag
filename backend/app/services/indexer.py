@@ -20,8 +20,10 @@ class DocumentIndexer:
         
         # Load local BGE Embedding model
         # Note: BAAI/bge-large-en-v1.5 has an embedding dimension of 1024
-        logger.info("Initializing SentenceTransformer BAAI/bge-large-en-v1.5...")
-        self.embed_model = SentenceTransformer("BAAI/bge-large-en-v1.5")
+        import platform
+        device = "cpu" if platform.system() == "Darwin" else None
+        logger.info(f"Initializing SentenceTransformer BAAI/bge-large-en-v1.5 on device {device or 'default'}...")
+        self.embed_model = SentenceTransformer("BAAI/bge-large-en-v1.5", device=device)
         self.vector_dim = 1024
         logger.info("Embedding model loaded successfully.")
 
@@ -44,6 +46,19 @@ class DocumentIndexer:
                 )
             )
             logger.info(f"Collection {collection_name} created successfully.")
+            
+        # Ensure the payload index on doc_id exists (required by strict mode)
+        try:
+            logger.info(f"Ensuring payload index on 'doc_id' for collection {collection_name}...")
+            self.qclient.create_payload_index(
+                collection_name=collection_name,
+                field_name="doc_id",
+                field_schema=qmodels.PayloadSchemaType.KEYWORD
+            )
+            logger.info(f"Payload index on 'doc_id' for {collection_name} ensured.")
+        except Exception as e:
+            logger.warning(f"Failed to create payload index on 'doc_id': {str(e)}")
+            
         return collection_name
 
     def split_text_recursive(self, text: str, chunk_size: int = 1000, chunk_overlap: int = 200) -> List[str]:
