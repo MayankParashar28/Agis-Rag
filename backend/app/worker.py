@@ -41,12 +41,15 @@ celery_app.conf.update(
 
 # Wrapper to run async functions in Celery
 def run_async(func, *args, **kwargs):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        return asyncio.run(func(*args, **kwargs))
-    except RuntimeError:
-        # Fallback if there is already an event loop in this thread
-        loop = asyncio.get_event_loop()
         return loop.run_until_complete(func(*args, **kwargs))
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
 
 @celery_app.task(bind=True, name="process_document_task")
 def process_document_task(self, doc_id_str: str, file_path: str, filename: str, chunk_size: int = 1000, chunk_overlap: int = 200):
