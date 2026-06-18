@@ -648,7 +648,7 @@ function ChatPageContent() {
   };
 
   return (
-    <div className="h-[calc(100dvh-5.5rem)] md:h-[calc(100dvh-4rem)] flex gap-4 md:gap-6 overflow-hidden relative">
+    <div className="mt-4 h-[calc(100dvh-6.5rem)] md:mt-6 md:h-[calc(100dvh-5.5rem)] flex gap-4 md:gap-6 overflow-hidden relative">
       {/* MOBILE LEFT: Conversation sidebar drawer */}
       {showMobileSidebar && (
         <>
@@ -787,7 +787,7 @@ function ChatPageContent() {
                         <div className={`max-w-[90%] sm:max-w-[75%] rounded-3xl p-4 sm:p-5 ${
                           isUser
                             ? "bg-primary text-background rounded-br-none shadow-md shadow-primary/10"
-                            : "glass border border-card-border/50 text-background rounded-bl-none"
+                            : "glass border border-card-border/50 text-foreground rounded-bl-none"
                         }`}>
                           {isUser ? (
                             <p className="text-sm leading-relaxed">{msg.content}</p>
