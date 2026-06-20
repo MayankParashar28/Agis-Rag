@@ -67,7 +67,7 @@ export default function RegisterPage() {
         <div className="w-full max-w-[400px]">
           <div className="mb-16">
             <h2 className="text-4xl lg:text-5xl font-serif text-foreground mb-4">Register</h2>
-            <p className="text-muted-foreground text-sm tracking-wide">Create your free Aegis workspace.</p>
+            <p className="text-muted-foreground text-sm tracking-wide">Create your free Agis workspace.</p>
           </div>
 
           {error && (

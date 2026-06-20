@@ -40,7 +40,7 @@ export default function LoginPage() {
         <div className="relative z-10">
           <div className="w-12 h-px bg-foreground mb-6" />
           <h1 className="text-6xl lg:text-8xl font-serif text-foreground leading-[0.9] tracking-tight mb-4">
-            Aegis <br /><span className="italic text-accent">RAG</span>
+            Agis <br /><span className="italic text-accent">RAG</span>
           </h1>
           <p className="text-lg text-foreground font-sans max-w-sm mt-6">
             Secure, Intelligent Enterprise Retrieval. Chat with your organizational knowledge effortlessly.

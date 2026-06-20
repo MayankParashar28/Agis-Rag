@@ -757,7 +757,7 @@ function ChatPageContent() {
                   <div className="w-16 h-16 bg-primary/15 rounded-full flex items-center justify-center mb-6 shadow-[0_0_30px_rgba(var(--primary-rgb),0.15)] border border-primary/20">
                     <Sparkles className="w-8 h-8 text-primary" />
                   </div>
-                  <h2 className="text-2xl font-bold text-foreground mb-2">Welcome to Aegis RAG</h2>
+                  <h2 className="text-2xl font-bold text-foreground mb-2">Welcome to Agis RAG</h2>
                   <p className="text-sm text-text-muted max-w-md mb-8">
                     Start by typing a query below, or choose one of our suggested prompts to explore your knowledge base.
                   </p>

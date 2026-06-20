@@ -420,7 +420,7 @@ export default function SettingsPage() {
             </div>
 
             <p className="text-xs text-text-muted leading-relaxed">
-              Below is the configuration and status overview of the databases, search engines, and AI models running on the Aegis Enterprise RAG platform. These connections are configured securely on the backend server.
+              Below is the configuration and status overview of the databases, search engines, and AI models running on the Agis Enterprise RAG platform. These connections are configured securely on the backend server.
             </p>
 
             {loading ? (

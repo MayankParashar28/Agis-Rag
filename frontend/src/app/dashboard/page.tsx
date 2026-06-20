@@ -150,7 +150,7 @@ export default function DashboardPage() {
             </span>
             <h3 className="text-xl font-bold text-foreground mb-2">Interactive Chat Engine</h3>
             <p className="text-sm text-text-muted leading-relaxed mb-6">
-              Ask questions across your uploaded knowledge bases. Aegis uses LangGraph workflow loops, hybrid search, and BGE reranking to deliver exact answers.
+              Ask questions across your uploaded knowledge bases. Agis uses LangGraph workflow loops, hybrid search, and BGE reranking to deliver exact answers.
             </p>
           </div>
           <div>

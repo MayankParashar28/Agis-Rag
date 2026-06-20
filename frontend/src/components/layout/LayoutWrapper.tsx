@@ -22,7 +22,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
       <div className="md:hidden flex items-center justify-between p-6 border-b border-card-border/10 bg-card shrink-0 relative z-10">
         <div className="flex flex-col space-y-1">
           <span className="font-serif text-xl text-foreground block leading-[0.9] tracking-tight">
-            Aegis <span className="italic text-accent">RAG</span>
+            Agis <span className="italic text-accent">RAG</span>
           </span>
         </div>
         <button 

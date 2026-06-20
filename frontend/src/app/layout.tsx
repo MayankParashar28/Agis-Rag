@@ -14,7 +14,7 @@ const playfair = Playfair_Display({
 });
 
 export const metadata: Metadata = {
-  title: "Aegis RAG | Enterprise AI Search Platform",
+  title: "Agis RAG | AI Search Platform",
   description: "Next-generation Agentic Retrieval-Augmented Generation platform.",
 };
 

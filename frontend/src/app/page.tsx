@@ -20,7 +20,7 @@ export default function Home() {
     <div className="flex flex-col items-center justify-center min-h-screen bg-background text-foreground p-6">
       <div className="flex flex-col items-center space-y-8 animate-pulse duration-[3000ms]">
         <div className="w-12 h-px bg-foreground" />
-        <h1 className="text-4xl font-serif tracking-widest uppercase">Aegis</h1>
+        <h1 className="text-4xl font-serif tracking-widest uppercase">Agis</h1>
         <p className="text-sm text-muted-foreground italic font-serif">Authenticating sequence...</p>
       </div>
     </div>

@@ -64,7 +64,7 @@ export default function Sidebar({ mobileMenuOpen, setMobileMenuOpen }: { mobileM
           <div className="w-8 h-px bg-foreground z-10" />
           <div className="relative z-10">
             <span className="font-serif text-2xl text-foreground block leading-[0.9] tracking-tight">
-              Aegis <span className="italic text-accent">RAG</span>
+              Agis <span className="italic text-accent">RAG</span>
             </span>
             <span className="text-[10px] tracking-[0.2em] uppercase text-muted-foreground mt-2 block">Enterprise Platform</span>
           </div>
