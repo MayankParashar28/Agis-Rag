@@ -38,9 +38,14 @@ export default function EvaluationPage() {
         setKbs(kbList);
         if (kbList.length > 0) {
           setSelectedKBId(kbList[0].id);
+        } else {
+          setLoading(false);
         }
       })
-      .catch((err) => setError(err.message || "Failed to load knowledge bases."));
+      .catch((err) => {
+        setError(err.message || "Failed to load knowledge bases.");
+        setLoading(false);
+      });
   }, [router]);
 
   useEffect(() => {
@@ -182,6 +187,20 @@ export default function EvaluationPage() {
             <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto" />
             <p className="text-sm text-text-muted">Loading metrics...</p>
           </div>
+        </div>
+      ) : kbs.length === 0 ? (
+        <div className="glass p-12 rounded-3xl border border-card-border text-center">
+          <Database className="w-12 h-12 text-text-muted mx-auto mb-4" />
+          <h3 className="text-lg font-bold text-foreground mb-2">No Knowledge Bases Found</h3>
+          <p className="text-sm text-text-muted max-w-sm mx-auto mb-6">
+            You must create a Knowledge Base and upload documents before running RAGAS evaluations.
+          </p>
+          <button
+            onClick={() => router.push("/knowledge-bases")}
+            className="px-5 py-3 bg-primary hover:bg-primary-hover text-background rounded-2xl font-semibold transition-all duration-200 text-sm cursor-pointer"
+          >
+            Go to Knowledge Bases
+          </button>
         </div>
       ) : evals.length === 0 ? (
         <div className="glass p-12 rounded-3xl border border-card-border text-center">

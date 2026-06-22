@@ -64,7 +64,7 @@ export default function AnalyticsPage() {
 
   const hallucinationData = logs.map((log) => ({
     label: log.timestamp.split(" ")[1] || log.timestamp,
-    value: log.hallucination_rate
+    value: log.hallucination_rate * 100
   }));
 
   const scoreData = logs.map((log) => ({
@@ -86,81 +86,95 @@ export default function AnalyticsPage() {
         </div>
       )}
 
-      {/* Grid of charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <SVGLineChart
-          title="Overall Query Latency"
-          data={latencyData}
-          color="#6366f1"
-          gradientId="latency-grad"
-          unit="ms"
-        />
-        <SVGLineChart
-          title="Qdrant Index Retrieval Latency"
-          data={retrievalData}
-          color="#06b6d4"
-          gradientId="retrieval-grad"
-          unit="ms"
-        />
-        <SVGLineChart
-          title="Simulated Hallucination Rate"
-          data={hallucinationData}
-          color="#f43f5e"
-          gradientId="hallucination-grad"
-          unit="%"
-        />
-        <SVGLineChart
-          title="Average Vector Retrieval Score"
-          data={scoreData}
-          color="#10b981"
-          gradientId="score-grad"
-          unit="%"
-        />
-      </div>
-
-      {/* Audit Logs table */}
-      <div className="glass border border-card-border rounded-3xl p-6 overflow-hidden">
-        <div className="flex justify-between items-center mb-4">
-          <h3 className="text-lg font-bold text-foreground">Audit Execution Logs</h3>
-          <span className="flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
-            <ShieldCheck className="w-3.5 h-3.5" />
-            <span>Secure Logging Active</span>
-          </span>
+      {logs.length === 0 ? (
+        <div className="glass p-12 rounded-3xl border border-card-border text-center flex flex-col items-center justify-center space-y-4 max-w-2xl mx-auto">
+          <div className="bg-primary/10 p-4 rounded-2xl border border-primary/20 text-primary">
+            <Activity className="w-8 h-8" />
+          </div>
+          <h3 className="text-xl font-bold text-foreground">No Telemetry Logs Yet</h3>
+          <p className="text-sm text-text-muted leading-relaxed">
+            There are no query execution logs recorded. Once you send messages and run RAG queries in the **Chat Console**, real-time performance telemetry, Qdrant/BM25 retrieval metrics, and faithfulness scores will automatically populate here.
+          </p>
         </div>
+      ) : (
+        <>
+          {/* Grid of charts */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <SVGLineChart
+              title="Overall Query Latency"
+              data={latencyData}
+              color="#6366f1"
+              gradientId="latency-grad"
+              unit="ms"
+            />
+            <SVGLineChart
+              title="Qdrant Index Retrieval Latency"
+              data={retrievalData}
+              color="#06b6d4"
+              gradientId="retrieval-grad"
+              unit="ms"
+            />
+            <SVGLineChart
+              title="Simulated Hallucination Rate"
+              data={hallucinationData}
+              color="#f43f5e"
+              gradientId="hallucination-grad"
+              unit="%"
+            />
+            <SVGLineChart
+              title="Average Vector Retrieval Score"
+              data={scoreData}
+              color="#10b981"
+              gradientId="score-grad"
+              unit="%"
+            />
+          </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-card-border/50 text-text-muted font-semibold">
-                <th className="py-3 pr-4">Timestamp</th>
-                <th className="py-3 px-4">Query Latency</th>
-                <th className="py-3 px-4">Vector Retrieval</th>
-                <th className="py-3 px-4">Hallucination</th>
-                <th className="py-3 pl-4 text-right">Cosine Score</th>
-              </tr>
-            </thead>
-            <tbody>
-              {logs.slice(-10).reverse().map((log, idx) => (
-                <tr key={idx} className="border-b border-card-border/30 text-foreground hover:bg-card-border/10 transition-colors">
-                  <td className="py-4 pr-4 font-mono text-xs">{log.timestamp}</td>
-                  <td className="py-4 px-4 font-semibold text-violet-400">{log.query_latency.toFixed(0)} ms</td>
-                  <td className="py-4 px-4 text-cyan-400 font-medium">{log.retrieval_latency.toFixed(0)} ms</td>
-                  <td className="py-4 px-4">
-                    <span className={`inline-flex items-center text-xs font-semibold py-0.5 px-2 rounded-full border ${
-                      log.hallucination_rate > 20
-                        ? "text-red-400 bg-red-500/10 border-red-500/20"
-                        : "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                    }`}>
-                      {log.hallucination_rate.toFixed(1)}%
-                    </span>
-                  </td>
-                  <td className="py-4 pl-4 text-right text-emerald-400 font-bold font-mono">{(log.retrieval_score * 100).toFixed(2)}%</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+          {/* Audit Logs table */}
+          <div className="glass border border-card-border rounded-3xl p-6 overflow-hidden">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-bold text-foreground">Audit Execution Logs</h3>
+              <span className="flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>Secure Logging Active</span>
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-card-border/50 text-text-muted font-semibold">
+                    <th className="py-3 pr-4">Timestamp</th>
+                    <th className="py-3 px-4">Query Latency</th>
+                    <th className="py-3 px-4">Vector Retrieval</th>
+                    <th className="py-3 px-4">Hallucination</th>
+                    <th className="py-3 pl-4 text-right">Cosine Score</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {logs.slice(-10).reverse().map((log, idx) => (
+                    <tr key={idx} className="border-b border-card-border/30 text-foreground hover:bg-card-border/10 transition-colors">
+                      <td className="py-4 pr-4 font-mono text-xs">{log.timestamp}</td>
+                      <td className="py-4 px-4 font-semibold text-violet-400">{log.query_latency.toFixed(0)} ms</td>
+                      <td className="py-4 px-4 text-cyan-400 font-medium">{log.retrieval_latency.toFixed(0)} ms</td>
+                      <td className="py-4 px-4">
+                        <span className={`inline-flex items-center text-xs font-semibold py-0.5 px-2 rounded-full border ${
+                          (log.hallucination_rate * 100) > 20
+                            ? "text-red-400 bg-red-500/10 border-red-500/20"
+                            : "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                        }`}>
+                          {(log.hallucination_rate * 100).toFixed(1)}%
+                        </span>
+                      </td>
+                      <td className="py-4 pl-4 text-right text-emerald-400 font-bold font-mono">{(log.retrieval_score * 100).toFixed(2)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

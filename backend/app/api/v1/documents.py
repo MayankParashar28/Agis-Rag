@@ -97,6 +97,26 @@ async def upload_document(
             detail=f"Unsupported file type '{ext}'. Allowed: .pdf, .docx, .txt, .csv"
         )
 
+    # 2b. Enforce max file size (50 MB)
+    MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+    # Read file size from content-length header or by seeking
+    if file.size and file.size > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File too large. Maximum allowed size is 50 MB."
+        )
+
+    # 2c. Validate content-type matches extension to prevent disguised uploads
+    ALLOWED_CONTENT_TYPES = {
+        ".pdf": ["application/pdf"],
+        ".docx": ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+        ".txt": ["text/plain", "application/octet-stream"],
+        ".csv": ["text/csv", "text/plain", "application/octet-stream"],
+    }
+    if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES.get(ext, []):
+        logger.warning(f"Upload content-type mismatch: ext={ext}, content_type={file.content_type}, filename={file.filename}")
+        # Allow it with a warning rather than blocking (browsers are inconsistent with MIME detection)
+
     # 3. Save file to permanent uploads directory
     doc_id = uuid.uuid4()
     save_filename = f"{doc_id}{ext}"

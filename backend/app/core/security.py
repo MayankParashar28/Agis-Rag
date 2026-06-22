@@ -76,9 +76,11 @@ async def decode_token(token: str) -> Optional[str]:
                         issuer=settings.NEON_AUTH_BASE_URL
                     )
                     return payload.get("sub")
+            # Neon Auth is configured but token didn't match any key — reject it.
+            # Do NOT fall back to local JWT to prevent forged HS256 tokens from bypassing Neon Auth.
+            return None
         
-        # Fallback to local JWT ONLY if Neon is not configured or fails matching kid
-        # NOTE: Be careful with fallback to prevent forged tokens.
+        # Local JWT — only used when Neon Auth is NOT configured
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         return payload.get("sub")
     except JWTError:

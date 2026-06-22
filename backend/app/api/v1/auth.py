@@ -11,7 +11,6 @@ from app.core.database import get_db
 from app.core.security import verify_password, get_password_hash, create_access_token, oauth2_scheme, decode_token
 from app.models.auth import User
 from app.schemas.auth import UserResponse, UserCreate, UserLogin, UserUpdate, Token
-from app.core.email import send_verification_email
 
 router = APIRouter()
 
@@ -111,8 +110,7 @@ async def signup(user_in: UserCreate, db: AsyncSession = Depends(get_db)) -> Any
         hashed_password=get_password_hash(user_in.password),
         full_name=user_in.full_name,
         role=role,
-        is_active=True,
-        email_verified=True
+        is_active=True
     )
     db.add(db_obj)
     await db.commit()
@@ -120,53 +118,6 @@ async def signup(user_in: UserCreate, db: AsyncSession = Depends(get_db)) -> Any
 
     return db_obj
 
-
-from pydantic import BaseModel
-class VerifyEmailRequest(BaseModel):
-    token: str
-
-@router.post("/verify-email")
-async def verify_email(req: VerifyEmailRequest, db: AsyncSession = Depends(get_db)):
-    email_or_id = decode_token(req.token)
-    if not email_or_id:
-        raise HTTPException(status_code=400, detail="Invalid or expired verification token")
-    
-    result = await db.execute(select(User).where(User.email == email_or_id))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-        
-    if user.email_verified:
-        return {"msg": "Email already verified"}
-        
-    user.email_verified = True
-    await db.commit()
-    return {"msg": "Email verified successfully"}
-
-class ResendVerificationRequest(BaseModel):
-    email: str
-
-@router.post("/resend-verification")
-async def resend_verification(req: ResendVerificationRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == req.email))
-    user = result.scalar_one_or_none()
-    if not user:
-        return {"msg": "If the email is registered, a verification link has been sent."}
-        
-    if user.email_verified:
-        return {"msg": "Email already verified."}
-        
-    expires_delta = timedelta(days=1)
-    verify_token = create_access_token(subject=req.email, expires_delta=expires_delta)
-    
-    try:
-        await send_verification_email(to_email=req.email, token=verify_token)
-    except Exception as e:
-        import logging
-        logging.error(f"Failed to resend email for {req.email}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to send email")
-        
-    return {"msg": "If the email is registered, a verification link has been sent."}
 
 
 
@@ -199,6 +150,8 @@ async def login(user_in: UserLogin, db: AsyncSession = Depends(get_db)) -> Any:
 
 
 from pydantic import BaseModel, EmailStr
+import httpx
+
 class GoogleToken(BaseModel):
     id_token: str
     email: Optional[EmailStr] = None
@@ -206,22 +159,63 @@ class GoogleToken(BaseModel):
 
 @router.post("/google", response_model=Token)
 async def google_login(token_in: GoogleToken, db: AsyncSession = Depends(get_db)) -> Any:
-    # Google OAuth token verification placeholder.
-    # In production, we'd use oauth2.verify_oauth2_token(token_in.id_token, requests.Request(), GOOGLE_CLIENT_ID)
-    # For simulation/mock: we'll parse/mock verify the token or construct a mock user if id_token matches a mock pattern.
-    mock_email = f"google_{token_in.id_token.split('.')[0]}@example.com" if "." in token_in.id_token else "google_user@example.com"
-    mock_name = token_in.full_name or "Google User"
+    """
+    Verifies Google OAuth id_token against Google's tokeninfo endpoint,
+    then creates or retrieves the user.
+    """
+    google_email = None
+    google_name = token_in.full_name or "Google User"
     
-    result = await db.execute(select(User).where(User.email == mock_email))
+    # Verify the id_token with Google
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"https://oauth2.googleapis.com/tokeninfo?id_token={token_in.id_token}"
+            )
+            if resp.status_code != 200:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid Google token. Verification failed."
+                )
+            token_data = resp.json()
+            
+            # Verify audience matches our Google Client ID (if configured)
+            if settings.GOOGLE_CLIENT_ID:
+                if token_data.get("aud") != settings.GOOGLE_CLIENT_ID:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Token audience mismatch. Invalid client."
+                    )
+            
+            google_email = token_data.get("email")
+            if not google_email:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Google token does not contain an email address."
+                )
+            google_name = token_data.get("name", google_name)
+            
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to reach Google token verification endpoint: {str(e)}"
+        )
+    
+    # Find or create user by verified Google email
+    result = await db.execute(select(User).where(User.email == google_email))
     user = result.scalar_one_or_none()
     
     if not user:
-        # Auto-signup google user
+        # Check if first user to auto-assign admin
+        users_count_res = await db.execute(select(func.count(User.id)))
+        users_count = users_count_res.scalar() or 0
+        role = "admin" if users_count == 0 else "user"
+        
         user = User(
-            email=mock_email,
-            hashed_password=get_password_hash(uuid.uuid4().hex), # random password
-            full_name=mock_name,
-            role="user",
+            email=google_email,
+            hashed_password=get_password_hash(uuid.uuid4().hex),
+            full_name=google_name,
+            role=role,
             is_active=True
         )
         db.add(user)

@@ -69,7 +69,7 @@ async def retrieve_context_node(state: AgentState) -> Dict[str, Any]:
     
     # 1. Search Knowledge Base (Hybrid Search)
     hybrid_start = time.time()
-    kb_chunks = await retrieval_pipeline.search_hybrid(db, kb_id, query_to_search, doc_ids, top_k=50)
+    kb_chunks = await retrieval_pipeline.search_hybrid(db, kb_id, query_to_search, doc_ids, top_k=15)
     logger.info(f"Retrieved {len(kb_chunks)} chunks from KB.")
     retrieved_chunks.extend(kb_chunks)
     
@@ -109,7 +109,9 @@ async def rerank_context_node(state: AgentState) -> Dict[str, Any]:
     passages = [c["content"] for c in candidates]
     pairs = [[query, p] for p in passages]
     
-    rerank_scores = retrieval_pipeline.reranker.predict(pairs).tolist()
+    import asyncio
+    rerank_scores = await asyncio.to_thread(retrieval_pipeline.reranker.predict, pairs)
+    rerank_scores = rerank_scores.tolist()
     
     # Associate scores and sort
     scored = []
@@ -150,7 +152,7 @@ async def _generate_llm_response(query: str, system_prompt: str) -> str:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": query}
             ],
-            temperature=0.2
+            temperature=0.0
         )
         return completion.choices[0].message.content
     elif settings.OPENAI_API_KEY:
@@ -161,7 +163,7 @@ async def _generate_llm_response(query: str, system_prompt: str) -> str:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": query}
             ],
-            temperature=0.2
+            temperature=0.0
         )
         return completion.choices[0].message.content
     return ""
@@ -174,10 +176,21 @@ async def generate_response_node(state: AgentState) -> Dict[str, Any]:
     query = state["query"]
     chunks = state["reranked_chunks"]
     
+    # Filter chunks by similarity threshold (0.45) to reduce hallucination
+    relevant_chunks = [c for c in chunks if c.get("similarity_score", 0.0) >= 0.45]
+    
+    if not relevant_chunks:
+        response_text = "I could not find any relevant information in the uploaded documents to answer your question."
+        return {
+            "response": response_text,
+            "citations": [],
+            "latency_breakdown": {**state.get("latency_breakdown", {}), "generation": time.time() - start_time}
+        }
+    
     # Build Context
     context_str = ""
     citations = []
-    for idx, chunk in enumerate(chunks):
+    for idx, chunk in enumerate(relevant_chunks):
         context_str += f"[Source {idx+1}] File: {chunk['filename']}, Page: {chunk.get('page_number', 'N/A')}\nContent: {chunk['content']}\n\n"
         citations.append({
             "source_doc": chunk["filename"],
@@ -186,9 +199,12 @@ async def generate_response_node(state: AgentState) -> Dict[str, Any]:
         })
         
     system_prompt = (
-        "You are an expert Enterprise AI assistant. Answer the query using ONLY the provided sources. "
-        "At the end of your response, cite your sources exactly. If the sources do not contain the answer, "
-        "state that you cannot find the answer in the provided documents.\n\n"
+        "You are an expert Enterprise AI assistant. Answer the query using ONLY the facts explicitly mentioned in the provided sources. "
+        "Follow these strict rules:\n"
+        "1. Do NOT assume, extrapolate, or generalize facts not directly stated in the sources.\n"
+        "2. Do NOT use any of your own outside or general training knowledge under any circumstances.\n"
+        "3. If the sources do not contain the exact facts to answer the question, state clearly: 'I cannot find the answer in the provided documents.'\n"
+        "4. Cite your sources exactly when presenting facts (e.g. at the end of the sentence use [Source X]).\n\n"
         f"Sources:\n{context_str}"
     )
     
@@ -201,7 +217,7 @@ async def generate_response_node(state: AgentState) -> Dict[str, Any]:
             response_text = f"Error generating answer via LLM. Falling back to local synthesis.\n\nContext:\n{context_str[:500]}..."
     else:
         # Fallback to local response generator (no OpenAI/Gemini key provided)
-        response_text = synthesize_context_fallback(query, chunks)
+        response_text = synthesize_context_fallback(query, relevant_chunks)
 
     latency = time.time() - start_time
     latencies = state.get("latency_breakdown", {})

@@ -97,22 +97,6 @@ async def get_observability_metrics(
             "hallucination_rate": log.hallucination_rate or 0.0,
             "retrieval_score": log.retrieval_score or 0.0
         })
-        
-    # Provide baseline dummy logs if no queries exist yet, to show nice UI charts on start
-    if not time_series:
-        import datetime
-        now = datetime.datetime.now()
-        for i in range(10):
-            t = (now - datetime.timedelta(minutes=(10-i)*10)).strftime("%H:%M:%S")
-            time_series.append({
-                "timestamp": t,
-                "query_latency": round(random_val(800, 1500), 2),
-                "embedding_latency": round(random_val(150, 300), 2),
-                "retrieval_latency": round(random_val(200, 400), 2),
-                "hallucination_rate": round(random_val(5, 25), 2),
-                "retrieval_score": round(random_val(0.75, 0.95), 4)
-            })
-
     return time_series
 
 def random_val(low: float, high: float) -> float:
@@ -148,7 +132,9 @@ async def rate_query_log(
     """
     Submit thumbs up (+1) or down (-1) helpfulness rating for a specific query log.
     """
-    result = await db.execute(select(QueryLog).where(QueryLog.id == log_id))
+    result = await db.execute(
+        select(QueryLog).where(QueryLog.id == log_id, QueryLog.user_id == current_user.id)
+    )
     query_log = result.scalar_one_or_none()
     if not query_log:
         raise HTTPException(

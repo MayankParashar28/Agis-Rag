@@ -35,7 +35,7 @@ export default function LoginPage() {
     <div className="h-screen overflow-hidden flex flex-col md:flex-row bg-background">
       {/* Left Section - Editorial Imagery / Branding */}
       <div className="md:w-5/12 lg:w-1/2 relative hidden md:flex flex-col justify-end p-16 overflow-hidden bg-muted-background">
-        <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1600585154340-be6161a56a0c?q=80&w=2070&auto=format&fit=crop')] bg-cover bg-center grayscale opacity-80 mix-blend-multiply transition-[filter,transform] duration-[2000ms] hover:grayscale-0 hover:scale-105" />
+        <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1600585154340-be6161a56a0c?q=80&w=2070&auto=format&fit=crop')] bg-cover bg-center grayscale opacity-80 mix-blend-multiply transition-all duration-[2000ms] hover:grayscale-0 animate-slow-zoom" />
         
         <div className="relative z-10">
           <div className="w-12 h-px bg-foreground mb-6" />

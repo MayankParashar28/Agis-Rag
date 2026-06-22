@@ -16,6 +16,8 @@ class MessageResponse(MessageBase):
     citations: Optional[List[Dict[str, Any]]] = None
     latency: Optional[float] = None
     retrieval_score: Optional[float] = None
+    query_log_id: Optional[uuid.UUID] = None
+    rating: Optional[int] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

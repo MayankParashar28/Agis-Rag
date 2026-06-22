@@ -71,31 +71,4 @@ async def get_evaluation_history(
     )
     evals_result = await db.execute(eval_query)
     evals = evals_result.scalars().all()
-    
-    # If history is empty, create a baseline mock list to populate the dashboard charts
-    if not evals:
-        import datetime
-        now = datetime.datetime.now()
-        import random
-        
-        mock_evals = []
-        for i in range(5):
-            t = now - datetime.timedelta(days=(5-i))
-            mock_evals.append(
-                Evaluation(
-                    id=uuid.uuid4(),
-                    kb_id=kb_id,
-                    faithfulness=round(0.75 + random.uniform(0.01, 0.20), 2),
-                    context_precision=round(0.80 + random.uniform(0.01, 0.15), 2),
-                    context_recall=round(0.70 + random.uniform(0.01, 0.22), 2),
-                    answer_relevancy=round(0.82 + random.uniform(0.01, 0.14), 2),
-                    created_at=t
-                )
-            )
-        db.add_all(mock_evals)
-        await db.commit()
-        
-        evals_result = await db.execute(eval_query)
-        evals = evals_result.scalars().all()
-
     return evals

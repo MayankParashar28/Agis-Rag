@@ -3,7 +3,6 @@ import time
 from typing import List, Dict, Any
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
-from sentence_transformers import SentenceTransformer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 import asyncio
@@ -11,6 +10,7 @@ import asyncio
 from app.core.config import settings
 from app.core.logging import logger
 from app.models.knowledge import Document, DocumentChunk
+from app.services.models import get_embedding_model
 
 class DocumentIndexer:
     def __init__(self):
@@ -18,12 +18,8 @@ class DocumentIndexer:
         self.qclient = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
         logger.info(f"Connected to Qdrant vector database at {settings.QDRANT_URL}.")
         
-        # Load local BGE Embedding model
-        # Note: BAAI/bge-large-en-v1.5 has an embedding dimension of 1024
-        import platform
-        device = "cpu" if platform.system() == "Darwin" else None
-        logger.info(f"Initializing SentenceTransformer BAAI/bge-large-en-v1.5 on device {device or 'default'}...")
-        self.embed_model = SentenceTransformer("BAAI/bge-large-en-v1.5", device=device)
+        # Load local BGE Embedding model from shared registry
+        self.embed_model = get_embedding_model()
         self.vector_dim = 1024
         logger.info("Embedding model loaded successfully.")
 
@@ -150,35 +146,48 @@ class DocumentIndexer:
         total_chunks = 0
         embedding_latencies = []
         
+        # Collect all chunk texts across all pages to batch embed them
+        all_chunks_info = []
         for page in parsed_pages:
             content = page["content"]
             page_num = page["page_number"]
-            
-            # Split page text into chunks
             chunks_text = self.split_text_recursive(content, chunk_size, chunk_overlap)
-            
             for idx, text in enumerate(chunks_text):
+                all_chunks_info.append({
+                    "text": text,
+                    "page_number": page_num
+                })
+                
+        # Batch embed all chunks
+        all_texts = [c["text"] for c in all_chunks_info]
+        if all_texts:
+            logger.info(f"DocumentIndexer: Batch embedding {len(all_texts)} chunks...")
+            start_embed = time.time()
+            # Encode in batches to leverage vectorization & PyTorch enhancements
+            encoded_batches = await asyncio.to_thread(
+                self.embed_model.encode, 
+                all_texts, 
+                batch_size=32, 
+                show_progress_bar=False,
+                normalize_embeddings=True
+            )
+            embed_latency = time.time() - start_embed
+            # Calculate average per-chunk latency for tracking
+            avg_chunk_latency = embed_latency / len(all_texts)
+            embedding_latencies = [avg_chunk_latency] * len(all_texts)
+            
+            # Reconstruct DB chunks and Qdrant points
+            for i, chunk_info in enumerate(all_chunks_info):
                 chunk_id = uuid.uuid4()
                 qdrant_point_id = str(chunk_id)
-                
-                # Compute embedding and track latency
-                start_embed = time.time()
-                # sentence-transformers expects a list of texts or a single text
-                # We normalize query/passage embeddings by default with BGE
-                # Offload CPU-bound task to thread pool
-                encoded = await asyncio.to_thread(
-                    self.embed_model.encode, text, normalize_embeddings=True
-                )
-                vector = encoded.tolist()
-                embed_latency = time.time() - start_embed
-                embedding_latencies.append(embed_latency)
+                vector = encoded_batches[i].tolist()
                 
                 # Relational DB DocumentChunk
                 db_chunk = DocumentChunk(
                     id=chunk_id,
                     doc_id=doc_id,
-                    content=text,
-                    page_number=page_num,
+                    content=chunk_info["text"],
+                    page_number=chunk_info["page_number"],
                     chunk_index=total_chunks,
                     qdrant_point_id=qdrant_point_id
                 )
@@ -193,8 +202,8 @@ class DocumentIndexer:
                             "chunk_id": qdrant_point_id,
                             "doc_id": str(doc_id),
                             "kb_id": str(doc.kb_id),
-                            "content": text,
-                            "page_number": page_num,
+                            "content": chunk_info["text"],
+                            "page_number": chunk_info["page_number"],
                             "filename": doc.filename,
                             "source": doc.filename
                         }

@@ -7,11 +7,11 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "Enterprise AI RAG Platform"
+    PROJECT_NAME: str = "Aegis RAG"
     API_V1_STR: str = "/api/v1"
     
     # Security
-    SECRET_KEY: str = Field(default="SUPER_SECRET_JWT_SIGNING_KEY_DO_NOT_USE_IN_PRODUCTION_1234567890")
+    SECRET_KEY: str = Field(...)  # REQUIRED — no default to prevent JWT forgery
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     ALGORITHM: str = "HS256"
 

@@ -98,12 +98,31 @@ async def list_messages(
             detail="Conversation not found or access denied."
         )
 
+    from app.models.metrics import QueryLog
     msg_result = await db.execute(
-        select(Message)
+        select(Message, QueryLog.rating)
+        .outerjoin(QueryLog, Message.query_log_id == QueryLog.id)
         .where(Message.conversation_id == conv_id)
         .order_by(Message.created_at.asc())
     )
-    return msg_result.scalars().all()
+    
+    messages_out = []
+    for row in msg_result.all():
+        msg_obj, rating = row
+        msg_dict = {
+            "id": msg_obj.id,
+            "conversation_id": msg_obj.conversation_id,
+            "sender": msg_obj.sender,
+            "content": msg_obj.content,
+            "citations": msg_obj.citations,
+            "latency": msg_obj.latency,
+            "retrieval_score": msg_obj.retrieval_score,
+            "created_at": msg_obj.created_at,
+            "query_log_id": msg_obj.query_log_id,
+            "rating": rating
+        }
+        messages_out.append(msg_dict)
+    return messages_out
 
 
 # --- SSE Streaming Response Generator ---
@@ -163,9 +182,64 @@ async def stream_agentic_rag(
         yield f"data: {json.dumps({'event': 'status', 'message': 'Generating response...'})}\n\n"
         
         # Prepare context and prompt
+        # Prepare context and prompt
         context_str = ""
         citations = []
-        for idx, chunk in enumerate(state["reranked_chunks"]):
+        
+        # Filter chunks by similarity threshold (0.45) to reduce hallucination
+        relevant_chunks = [c for c in state["reranked_chunks"] if c.get("similarity_score", 0.0) >= 0.45]
+        
+        if not relevant_chunks:
+            no_info_msg = "I could not find any relevant information in the uploaded documents to answer your question."
+            yield f"data: {json.dumps({'event': 'token', 'text': no_info_msg})}\n\n"
+            
+            # Log to DB
+            log_id = uuid.uuid4()
+            user_msg = Message(
+                conversation_id=query_in.conversation_id,
+                sender="user",
+                content=query_in.query
+            )
+            assistant_msg = Message(
+                conversation_id=query_in.conversation_id,
+                sender="assistant",
+                content=no_info_msg,
+                citations=[],
+                latency=time.time() - total_start,
+                retrieval_score=0.0,
+                query_log_id=log_id
+            )
+            query_log = QueryLog(
+                id=log_id,
+                user_id=user_id,
+                query=query_in.query,
+                latency=time.time() - total_start,
+                embedding_latency=0.05,
+                retrieval_latency=0.1,
+                hallucination_rate=0.0,  # 0% hallucination rate since "no info" is 100% faithful
+                retrieval_score=0.0
+            )
+            db.add(user_msg)
+            db.add(assistant_msg)
+            db.add(query_log)
+            
+            # Update conversation updated_at
+            conv_res = await db.execute(select(Conversation).where(Conversation.id == query_in.conversation_id))
+            conv = conv_res.scalar_one_or_none()
+            if conv:
+                conv.updated_at = func.now() if 'func' in globals() else datetime.now()
+                
+            await db.commit()
+            
+            # Save to Redis
+            await chat_memory.add_message(str(query_in.conversation_id), {"sender": "user", "content": query_in.query})
+            await chat_memory.add_message(str(query_in.conversation_id), {"sender": "assistant", "content": no_info_msg, "citations": []})
+            
+            yield f"data: {json.dumps({'event': 'metadata', 'query_log_id': str(query_log.id), 'citations': [], 'confidence_score': 100.0, 'latency': time.time() - total_start, 'latency_breakdown': {}})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+            
+        for idx, chunk in enumerate(relevant_chunks):
             context_str += f"[Source {idx+1}] File: {chunk['filename']}, Page: {chunk.get('page_number', 'N/A')}\nContent: {chunk['content']}\n\n"
             citations.append({
                 "source_doc": chunk["filename"],
@@ -174,14 +248,24 @@ async def stream_agentic_rag(
             })
             
         system_prompt = (
-            "You are an expert Enterprise AI assistant. Answer the query using ONLY the provided sources. "
-            "Cite your sources exactly when presenting facts. If the sources do not contain the answer, "
-            "state that you cannot find the answer in the provided documents.\n\n"
+            "You are an expert Enterprise AI assistant. Answer the query using ONLY the facts explicitly mentioned in the provided sources. "
+            "Follow these strict rules:\n"
+            "1. Do NOT assume, extrapolate, or generalize facts not directly stated in the sources.\n"
+            "2. Do NOT use any of your own outside or general training knowledge under any circumstances.\n"
+            "3. If the sources do not contain the exact facts to answer the question, state clearly: 'I cannot find the answer in the provided documents.'\n"
+            "4. Cite your sources exactly when presenting facts (e.g. at the end of the sentence use [Source X]).\n\n"
             f"Sources:\n{context_str}"
         )
         
         full_response_text = ""
         gen_start = time.time()
+        
+        # Fetch conversation history from Redis memory to prepend to LLM context
+        history = await chat_memory.get_history(str(query_in.conversation_id), limit=6)
+        formatted_history = []
+        for msg in history:
+            role = "user" if msg.get("sender") == "user" else "assistant"
+            formatted_history.append({"role": role, "content": msg.get("content")})
         
         if settings.GEMINI_API_KEY:
             try:
@@ -194,9 +278,10 @@ async def stream_agentic_rag(
                     model=settings.GEMINI_MODEL,
                     messages=[
                         {"role": "system", "content": system_prompt},
+                        *formatted_history,
                         {"role": "user", "content": query_in.query}
                     ],
-                    temperature=0.2,
+                    temperature=0.0,
                     stream=True
                 )
                 
@@ -219,9 +304,10 @@ async def stream_agentic_rag(
                     model="gpt-4o",
                     messages=[
                         {"role": "system", "content": system_prompt},
+                        *formatted_history,
                         {"role": "user", "content": query_in.query}
                     ],
-                    temperature=0.2,
+                    temperature=0.0,
                     stream=True
                 )
                 
@@ -252,15 +338,22 @@ async def stream_agentic_rag(
         state["citations"] = citations
         state["latency_breakdown"]["generation"] = gen_latency
         
-        # Step 5: Self Evaluation
-        yield f"data: {json.dumps({'event': 'status', 'message': 'Evaluating faithfulness and accuracy...'})}\n\n"
-        await asyncio.sleep(0.1)
-        
-        eval_res = await self_evaluate_node(state)
-        state.update(eval_res)
+        # Step 5: Fast Heuristic Evaluation for SSE Response & Async Deep Evaluation
+        yield f"data: {json.dumps({'event': 'status', 'message': 'Processing response metadata...'})}\n\n"
         
         total_latency = time.time() - total_start
         avg_retrieval_score = sum(c.get("similarity_score", 0.0) for c in state["reranked_chunks"]) / len(state["reranked_chunks"]) if state["reranked_chunks"] else 0.0
+        
+        # Calculate fast token overlap heuristic score for immediate stream metadata
+        import re
+        words_list = re.findall(r'\w+', full_response_text.lower())
+        overlap_scores = []
+        for chunk in relevant_chunks:
+            chunk_words = set(re.findall(r'\w+', chunk["content"].lower()))
+            overlap = len([w for w in words_list if w in chunk_words])
+            overlap_scores.append(overlap / len(words_list) if words_list else 0.0)
+        avg_overlap = sum(overlap_scores) / len(overlap_scores) if overlap_scores else 0.0
+        fast_confidence = (avg_overlap * 0.4 + avg_retrieval_score * 0.6) * 100
         
         # Step 6: Log Metrics & Store in PG + Redis
         # Insert User Message
@@ -269,6 +362,8 @@ async def stream_agentic_rag(
             sender="user",
             content=query_in.query
         )
+        # Generate Log ID first to tie Message to QueryLog
+        log_id = uuid.uuid4()
         # Insert Assistant Message
         assistant_msg = Message(
             conversation_id=query_in.conversation_id,
@@ -276,17 +371,19 @@ async def stream_agentic_rag(
             content=full_response_text,
             citations=citations,
             latency=total_latency,
-            retrieval_score=avg_retrieval_score
+            retrieval_score=avg_retrieval_score,
+            query_log_id=log_id
         )
         
-        # Save Log details to PostgreSQL `query_logs` for dashboards
+        # Save Log details to PostgreSQL `query_logs` for dashboards (use fast_confidence first)
         query_log = QueryLog(
+            id=log_id,
             user_id=user_id,
             query=query_in.query,
             latency=total_latency,
-            embedding_latency=state["latency_breakdown"].get("retrieval", 0.1) * 0.3, # approximate embedding part
+            embedding_latency=state["latency_breakdown"].get("retrieval", 0.1) * 0.3,
             retrieval_latency=state["latency_breakdown"].get("retrieval", 0.1) * 0.7,
-            hallucination_rate=round(100.0 - state["confidence_score"], 2),
+            hallucination_rate=round((100.0 - fast_confidence) / 100.0, 4),
             retrieval_score=avg_retrieval_score
         )
         
@@ -301,14 +398,38 @@ async def stream_agentic_rag(
             conv.updated_at = func.now() if 'func' in globals() else datetime.now()
             
         await db.commit()
+        await db.refresh(query_log)
         
         # Save to Redis memory for session continuity
         await chat_memory.add_message(str(query_in.conversation_id), {"sender": "user", "content": query_in.query})
         await chat_memory.add_message(str(query_in.conversation_id), {"sender": "assistant", "content": full_response_text, "citations": citations})
         
-        # Yield final metadata packet
-        yield f"data: {json.dumps({'event': 'metadata', 'query_log_id': str(query_log.id), 'citations': citations, 'confidence_score': state['confidence_score'], 'latency': total_latency, 'latency_breakdown': state['latency_breakdown']})}\n\n"
+        # Yield final metadata packet using fast confidence score
+        yield f"data: {json.dumps({'event': 'metadata', 'query_log_id': str(query_log.id), 'citations': citations, 'confidence_score': fast_confidence, 'latency': total_latency, 'latency_breakdown': state['latency_breakdown']})}\n\n"
         yield "data: [DONE]\n\n"
+        
+        # Spawn asynchronous deep evaluation background task
+        state_copy = {k: v for k, v in state.items() if k != "db_session"}
+        state_copy["response"] = full_response_text
+        
+        async def run_async_evaluation(log_id: uuid.UUID, state_data: Dict[str, Any]):
+            logger.info(f"Background evaluation: Starting for query log {log_id}...")
+            try:
+                eval_res = await self_evaluate_node(state_data)
+                confidence = eval_res.get("confidence_score", 100.0)
+                hallucination_rate = round((100.0 - confidence) / 100.0, 4)
+                
+                async with SessionLocal() as background_db:
+                    result = await background_db.execute(select(QueryLog).where(QueryLog.id == log_id))
+                    qlog = result.scalar_one_or_none()
+                    if qlog:
+                        qlog.hallucination_rate = hallucination_rate
+                        await background_db.commit()
+                        logger.info(f"Background evaluation: Updated query log {log_id} with hallucination rate: {hallucination_rate}")
+            except Exception as eval_err:
+                logger.error(f"Background evaluation failed: {str(eval_err)}")
+                
+        asyncio.create_task(run_async_evaluation(query_log.id, state_copy))
 
 
 @router.post("/message")

@@ -696,7 +696,7 @@ function ChatPageContent() {
               className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 cursor-pointer flex-1 sm:flex-none justify-center ${
                 activeMainTab === "chat"
                   ? "bg-primary text-background shadow-md shadow-primary/15"
-                  : "text-text-muted hover:text-background"
+                  : "text-text-muted hover:text-foreground"
               }`}
             >
               <MessageSquare className="w-3.5 h-3.5" />
@@ -707,7 +707,7 @@ function ChatPageContent() {
               className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 cursor-pointer flex-1 sm:flex-none justify-center ${
                 activeMainTab === "guide"
                   ? "bg-primary text-background shadow-md shadow-primary/15"
-                  : "text-text-muted hover:text-background"
+                  : "text-text-muted hover:text-foreground"
               }`}
             >
               <BookOpen className="w-3.5 h-3.5" />

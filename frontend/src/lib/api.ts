@@ -276,8 +276,6 @@ export const api = {
     authStorage.setUser(res.user);
     return res;
   },
-  verifyEmail: (token: string) => request<{msg: string}>("/auth/verify-email", { method: "POST", body: JSON.stringify({ token }) }),
-  resendVerification: (email: string) => request<{msg: string}>("/auth/resend-verification", { method: "POST", body: JSON.stringify({ email }) }),
   logout: () => authStorage.clear(),
 
   // User Management
