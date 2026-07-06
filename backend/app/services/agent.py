@@ -418,8 +418,12 @@ def route_after_eval(state: AgentState) -> Literal["rewrite", "end"]:
     confidence = state["confidence_score"]
     retries = state["retry_count"]
     
-    if confidence < 80.0 and retries < 2:
-        return "rewrite"
+    if confidence < 80.0:
+        if retries < 1:
+            logger.warning(f"Self-Evaluation confidence ({confidence:.2f}%) is under 80.0%. Routing to rewrite (attempt {retries + 1}).")
+            return "rewrite"
+        else:
+            logger.warning(f"Self-Evaluation confidence ({confidence:.2f}%) is under 80.0%, but max retries ({retries}) reached. Ending.")
     return "end"
 
 

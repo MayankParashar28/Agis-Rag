@@ -91,12 +91,38 @@ class RetrievalPipeline:
         if not any(c.name == collection_name for c in collections):
             return []
 
-        # Generate query embedding asynchronously in threadpool to prevent blocking the event loop
-        import asyncio
-        query_vector = await asyncio.to_thread(
-            self.embed_model.encode, query, normalize_embeddings=True
-        )
-        query_vector = query_vector.tolist()
+        # Try to get embedding from Redis cache
+        import hashlib
+        import json
+        from app.core.redis_client import redis_client
+
+        query_hash = hashlib.md5(query.strip().lower().encode('utf-8')).hexdigest()
+        redis_key = f"emb:{query_hash}"
+        query_vector = None
+
+        if redis_client:
+            try:
+                cached_vec = await redis_client.get(redis_key)
+                if cached_vec:
+                    query_vector = json.loads(cached_vec)
+                    logger.info(f"RetrievalPipeline: Embedding cache hit for query: '{query}'")
+            except Exception as re:
+                logger.warning(f"Failed to fetch embedding from Redis cache: {re}")
+
+        if query_vector is None:
+            # Generate query embedding asynchronously in threadpool to prevent blocking the event loop
+            import asyncio
+            query_vector = await asyncio.to_thread(
+                self.embed_model.encode, query, normalize_embeddings=True
+            )
+            query_vector = query_vector.tolist()
+            
+            if redis_client:
+                try:
+                    await redis_client.setex(redis_key, 86400, json.dumps(query_vector))
+                    logger.info(f"RetrievalPipeline: Cached embedding for query: '{query}'")
+                except Exception as re:
+                    logger.warning(f"Failed to cache embedding in Redis: {re}")
         
         qfilter = None
         if document_ids:

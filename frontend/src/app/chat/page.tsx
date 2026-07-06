@@ -25,7 +25,9 @@ import {
   BookOpen,
   Pin,
   Notebook,
-  Menu
+  Menu,
+  AlertTriangle,
+  UploadCloud
 } from "lucide-react";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 import { api, authStorage, KnowledgeBase, Conversation, Message, UserNote } from "@/lib/api";
@@ -60,6 +62,7 @@ function ChatPageContent() {
   // NotebookLM Checklist Sources
   const [kbDocs, setKbDocs] = useState<any[]>([]);
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+  const [docsLoading, setDocsLoading] = useState(false);
 
   // Citation split-screen inspector
   const [inspectorDocId, setInspectorDocId] = useState<string | null>(null);
@@ -103,12 +106,18 @@ function ChatPageContent() {
   useEffect(() => {
     if (!selectedKBId) return;
     
+    setDocsLoading(true);
     api.listDocs(selectedKBId)
       .then((docs) => {
         setKbDocs(docs || []);
         setSelectedDocIds([]); // reset selection
       })
-      ;
+      .catch((err) => {
+        console.error("Failed to load documents:", err);
+      })
+      .finally(() => {
+        setDocsLoading(false);
+      });
       
     loadNotes();
     setGuide(null);
@@ -748,36 +757,79 @@ function ChatPageContent() {
           </div>
         </div>
 
+        {/* Warning Banner for empty Knowledge Base */}
+        {selectedKBId && kbDocs.length === 0 && !docsLoading && (
+          <div className="bg-amber-500/10 border-b border-amber-500/25 px-4 sm:px-6 py-3 flex items-center justify-between text-xs text-amber-500 animate-in slide-in-from-top duration-300">
+            <div className="flex items-center space-x-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-500" />
+              <span>
+                <strong>No documents found:</strong> This knowledge base has no documents indexed. Please upload documents to enable RAG.
+              </span>
+            </div>
+            <button
+              onClick={() => router.push("/upload")}
+              className="text-[10px] font-bold uppercase tracking-wider px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-500 rounded-lg cursor-pointer transition-colors border border-amber-500/20 flex items-center gap-1.5 shrink-0"
+            >
+              <UploadCloud className="w-3.5 h-3.5" />
+              <span>Upload Documents</span>
+            </button>
+          </div>
+        )}
+
         {activeMainTab === "chat" ? (
           <>
             {/* Message area */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-6">
               {messages.length === 0 && !isStreaming ? (
-                <div className="flex flex-col items-center justify-center h-full text-center px-4 animate-in fade-in zoom-in duration-500">
-                  <div className="w-16 h-16 bg-primary/15 rounded-full flex items-center justify-center mb-6 shadow-[0_0_30px_rgba(var(--primary-rgb),0.15)] border border-primary/20">
-                    <Sparkles className="w-8 h-8 text-primary" />
+                docsLoading ? (
+                  <div className="flex flex-col items-center justify-center h-full text-center px-4">
+                    <Loader2 className="w-8 h-8 animate-spin text-primary mb-2" />
+                    <p className="text-sm text-text-muted">Loading documents...</p>
                   </div>
-                  <h2 className="text-2xl font-bold text-foreground mb-2">Welcome to Agis RAG</h2>
-                  <p className="text-sm text-text-muted max-w-md mb-8">
-                    Start by typing a query below, or choose one of our suggested prompts to explore your knowledge base.
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-2xl w-full">
-                    {[
-                      "Summarize the key takeaways of the uploaded documents.",
-                      "What are the main parameters or metrics described?",
-                      "Find any tables or structured data and explain them.",
-                      "Are there any specific action items or recommendations?"
-                    ].map((prompt, idx) => (
-                      <button
-                        key={idx}
-                        onClick={() => handleSendMessage(undefined, prompt)}
-                        className="text-left p-4 rounded-2xl bg-card border border-card-border/60 hover:border-primary/50 hover:bg-primary/5 transition-all group cursor-pointer"
-                      >
-                        <p className="text-sm text-muted-foreground group-hover:text-primary transition-colors">{prompt}</p>
-                      </button>
-                    ))}
+                ) : kbDocs.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-full text-center px-4 animate-in fade-in zoom-in duration-500">
+                    <div className="w-16 h-16 bg-amber-500/10 rounded-full flex items-center justify-center mb-6 shadow-[0_0_30px_rgba(245,158,11,0.15)] border border-amber-500/20">
+                      <FileText className="w-8 h-8 text-amber-500" />
+                    </div>
+                    <h2 className="text-2xl font-bold text-foreground mb-2">No documents found for this Knowledge Base</h2>
+                    <p className="text-sm text-text-muted max-w-md mb-8">
+                      This knowledge base has no documents indexed. Please upload documents in the upload section to start chatting.
+                    </p>
+                    <button
+                      onClick={() => router.push("/upload")}
+                      className="px-6 py-3 bg-primary hover:bg-primary-hover text-background font-bold rounded-2xl shadow-lg transition-all duration-200 cursor-pointer flex items-center gap-2 text-xs uppercase tracking-wider"
+                    >
+                      <UploadCloud className="w-4 h-4" />
+                      <span>Upload Documents</span>
+                    </button>
                   </div>
-                </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-full text-center px-4 animate-in fade-in zoom-in duration-500">
+                    <div className="w-16 h-16 bg-primary/15 rounded-full flex items-center justify-center mb-6 shadow-[0_0_30px_rgba(var(--primary-rgb),0.15)] border border-primary/20">
+                      <Sparkles className="w-8 h-8 text-primary" />
+                    </div>
+                    <h2 className="text-2xl font-bold text-foreground mb-2">Welcome to Agis RAG</h2>
+                    <p className="text-sm text-text-muted max-w-md mb-8">
+                      Start by typing a query below, or choose one of our suggested prompts to explore your knowledge base.
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-2xl w-full">
+                      {[
+                        "Summarize the key takeaways of the uploaded documents.",
+                        "What are the main parameters or metrics described?",
+                        "Find any tables or structured data and explain them.",
+                        "Are there any specific action items or recommendations?"
+                      ].map((prompt, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => handleSendMessage(undefined, prompt)}
+                          className="text-left p-4 rounded-2xl bg-card border border-card-border/60 hover:border-primary/50 hover:bg-primary/5 transition-all group cursor-pointer"
+                        >
+                          <p className="text-sm text-muted-foreground group-hover:text-primary transition-colors">{prompt}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )
               ) : (
                 <>
                   {messages.map((msg) => {
@@ -941,15 +993,21 @@ function ChatPageContent() {
                 <input
                   type="text"
                   required
-                  disabled={isStreaming || !activeConvId}
+                  disabled={isStreaming || !activeConvId || (kbDocs.length === 0 && !docsLoading && !webSearchEnabled)}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder={activeConvId ? "Query knowledge base using agent RAG..." : "Select a conversation to query..."}
+                  placeholder={
+                    !activeConvId
+                      ? "Select a conversation to query..."
+                      : (kbDocs.length === 0 && !docsLoading)
+                        ? (webSearchEnabled ? "Query using Web Search (No documents in KB)..." : "No documents in KB. Please upload documents to chat.")
+                        : "Query knowledge base using agent RAG..."
+                  }
                   className="w-full bg-background border border-card-border rounded-2xl pl-4 pr-16 py-4 text-foreground placeholder-text-muted focus:outline-none focus:border-primary disabled:opacity-50 text-sm"
                 />
                 <button
                   type="submit"
-                  disabled={isStreaming || !query.trim() || !activeConvId}
+                  disabled={isStreaming || !query.trim() || !activeConvId || (kbDocs.length === 0 && !docsLoading && !webSearchEnabled)}
                   className="absolute right-3 p-3 bg-primary hover:bg-primary-hover text-background rounded-xl shadow-lg transition-all duration-200 disabled:opacity-50 cursor-pointer"
                 >
                   <Send className="w-4 h-4" />

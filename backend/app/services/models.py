@@ -33,6 +33,6 @@ def get_reranker() -> CrossEncoder:
                     device = "mps"
             except ImportError:
                 pass
-        logger.info(f"Loading CrossEncoder BAAI/bge-reranker-large on device: {device}...")
-        _reranker = CrossEncoder("BAAI/bge-reranker-large", device=device)
+        logger.info(f"Loading CrossEncoder BAAI/bge-reranker-base on device: {device}...")
+        _reranker = CrossEncoder("BAAI/bge-reranker-base", device=device)
     return _reranker
