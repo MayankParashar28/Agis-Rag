@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, Playfair_Display } from "next/font/google";
 import "./globals.css";
 import LayoutWrapper from "@/components/layout/LayoutWrapper";
+import Script from "next/script";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -28,6 +29,19 @@ export default function RootLayout({
   return (
     <html lang="en" className="h-full">
       <body className={`${inter.variable} ${playfair.variable} font-sans min-h-screen text-foreground bg-background antialiased`}>
+        <Script
+          src="https://www.googletagmanager.com/gtag/js?id=G-BCM7VNKXV1"
+          strategy="afterInteractive"
+        />
+        <Script id="google-analytics" strategy="afterInteractive">
+          {`
+            window.dataLayer = window.dataLayer || [];
+            function gtag(){dataLayer.push(arguments);}
+            gtag('js', new Date());
+
+            gtag('config', 'G-BCM7VNKXV1');
+          `}
+        </Script>
         {/* Global Paper Noise Overlay */}
         <div className="pointer-events-none fixed inset-0 z-50 bg-noise opacity-[0.03]" />
         
