@@ -244,8 +244,8 @@ class RetrievalPipeline:
         top_5 = scored_candidates[:5]
         
         for c in top_5:
-            # Sigmoid normalization
-            c["similarity_score"] = round(1 / (1 + math.exp(-c["rerank_score"])), 4)
+            # Rerank score is already a probability (0-1), use it directly
+            c["similarity_score"] = round(c["rerank_score"], 4)
 
         return {
             "chunks": top_5,

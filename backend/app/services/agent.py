@@ -123,10 +123,9 @@ async def rerank_context_node(state: AgentState) -> Dict[str, Any]:
     scored.sort(key=lambda x: x["rerank_score"], reverse=True)
     top_5 = scored[:5]
     
-    # Sigmoid normalization to similarity scores
-    import math
+    # Rerank score is already a probability (0-1), use it directly
     for c in top_5:
-        c["similarity_score"] = round(1 / (1 + math.exp(-c["rerank_score"])), 4)
+        c["similarity_score"] = round(c["rerank_score"], 4)
         
     latency = time.time() - start_time
     latencies = state.get("latency_breakdown", {})
@@ -176,8 +175,8 @@ async def generate_response_node(state: AgentState) -> Dict[str, Any]:
     query = state["query"]
     chunks = state["reranked_chunks"]
     
-    # Filter chunks by similarity threshold (0.45) to reduce hallucination
-    relevant_chunks = [c for c in chunks if c.get("similarity_score", 0.0) >= 0.45]
+    # Filter chunks by similarity threshold (0.30) to reduce hallucination
+    relevant_chunks = [c for c in chunks if c.get("similarity_score", 0.0) >= 0.30]
     
     if not relevant_chunks:
         response_text = "I could not find any relevant information in the uploaded documents to answer your question."

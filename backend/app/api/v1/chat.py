@@ -186,8 +186,8 @@ async def stream_agentic_rag(
         context_str = ""
         citations = []
         
-        # Filter chunks by similarity threshold (0.45) to reduce hallucination
-        relevant_chunks = [c for c in state["reranked_chunks"] if c.get("similarity_score", 0.0) >= 0.45]
+        # Filter chunks by similarity threshold (0.30) to reduce hallucination
+        relevant_chunks = [c for c in state["reranked_chunks"] if c.get("similarity_score", 0.0) >= 0.30]
         
         if not relevant_chunks:
             no_info_msg = "I could not find any relevant information in the uploaded documents to answer your question."
