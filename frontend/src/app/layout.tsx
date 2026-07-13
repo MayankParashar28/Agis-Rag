@@ -46,7 +46,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Agis RAG | AI Search Platform",
     description: "Next-generation Agentic Retrieval-Augmented Generation platform.",
-    url: "https://agis.ai",
+    url: "https://agisrag.vercel.app",
     siteName: "Agis RAG",
     locale: "en_US",
     type: "website",
@@ -59,13 +59,13 @@ export const metadata: Metadata = {
     creator: "@agis_rag",
   },
   alternates: {
-    canonical: "https://agis.ai",
+    canonical: "https://agisrag.vercel.app",
     languages: {
-      "en-US": "https://agis.ai/en-US",
-      "en-GB": "https://agis.ai/en-GB",
-      "es-ES": "https://agis.ai/es-ES",
-      "fr-FR": "https://agis.ai/fr-FR",
-      "x-default": "https://agis.ai",
+      "en-US": "https://agisrag.vercel.app/en-US",
+      "en-GB": "https://agisrag.vercel.app/en-GB",
+      "es-ES": "https://agisrag.vercel.app/es-ES",
+      "fr-FR": "https://agisrag.vercel.app/fr-FR",
+      "x-default": "https://agisrag.vercel.app",
     },
   },
   other: {

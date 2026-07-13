@@ -7,6 +7,6 @@ export default function robots(): MetadataRoute.Robots {
       allow: "/",
       disallow: ["/api/", "/admin/"],
     },
-    sitemap: "https://agis.ai/sitemap.xml",
+    sitemap: "https://agisrag.vercel.app/sitemap.xml",
   };
 }

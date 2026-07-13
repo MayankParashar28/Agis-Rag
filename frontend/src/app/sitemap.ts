@@ -1,7 +1,7 @@
 import type { MetadataRoute } from "next";
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const baseUrl = "https://agis.ai";
+  const baseUrl = "https://agisrag.vercel.app";
   
   const routes = [
     "",
