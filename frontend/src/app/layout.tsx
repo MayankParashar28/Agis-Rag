@@ -19,6 +19,61 @@ const playfair = Playfair_Display({
 export const metadata: Metadata = {
   title: "Agis RAG | AI Search Platform",
   description: "Next-generation Agentic Retrieval-Augmented Generation platform.",
+  keywords: [
+    "RAG",
+    "AI Search",
+    "Agentic RAG",
+    "Enterprise Search",
+    "Retrieval-Augmented Generation",
+    "Agis",
+    "Vector Search",
+    "LLM Search Agent"
+  ],
+  authors: [{ name: "Agis Team" }],
+  creator: "Agis",
+  publisher: "Agis",
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-video-preview": -1,
+      "max-image-preview": "large",
+      "max-snippet": -1,
+    },
+  },
+  openGraph: {
+    title: "Agis RAG | AI Search Platform",
+    description: "Next-generation Agentic Retrieval-Augmented Generation platform.",
+    url: "https://agis.ai",
+    siteName: "Agis RAG",
+    locale: "en_US",
+    type: "website",
+    alternateLocale: ["en_GB", "es_ES", "fr_FR"],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Agis RAG | AI Search Platform",
+    description: "Next-generation Agentic Retrieval-Augmented Generation platform.",
+    creator: "@agis_rag",
+  },
+  alternates: {
+    canonical: "https://agis.ai",
+    languages: {
+      "en-US": "https://agis.ai/en-US",
+      "en-GB": "https://agis.ai/en-GB",
+      "es-ES": "https://agis.ai/es-ES",
+      "fr-FR": "https://agis.ai/fr-FR",
+      "x-default": "https://agis.ai",
+    },
+  },
+  other: {
+    "geo.region": "US-CA",
+    "geo.placename": "San Francisco",
+    "geo.position": "37.7749;-122.4194",
+    "ICBM": "37.7749, -122.4194",
+  },
 };
 
 export default function RootLayout({
@@ -30,7 +85,7 @@ export default function RootLayout({
     <html lang="en" className="h-full">
       <body className={`${inter.variable} ${playfair.variable} font-sans min-h-screen text-foreground bg-background antialiased`}>
         <Script
-          src="https://www.googletagmanager.com/gtag/js?id=G-BCM7VNKXV1"
+          src="https://www.googletagmanager.com/gtag/js?id=G-FVVHHM9J27"
           strategy="afterInteractive"
         />
         <Script id="google-analytics" strategy="afterInteractive">
@@ -39,7 +94,7 @@ export default function RootLayout({
             function gtag(){dataLayer.push(arguments);}
             gtag('js', new Date());
 
-            gtag('config', 'G-BCM7VNKXV1');
+            gtag('config', 'G-FVVHHM9J27');
           `}
         </Script>
         {/* Global Paper Noise Overlay */}
