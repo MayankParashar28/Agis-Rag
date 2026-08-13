@@ -42,9 +42,18 @@ export default function Sidebar({ mobileMenuOpen, setMobileMenuOpen }: { mobileM
   }, [pathname]);
 
   const handleLogout = async () => {
-    await authClient.signOut();
+    try {
+      await authClient.signOut();
+    } catch (err) {
+      console.warn("Neon auth signOut skipped or unavailable:", err);
+    }
     api.logout();
-    router.push("/login");
+    setCurrentUser(null);
+    if (typeof window !== "undefined") {
+      window.location.href = "/login";
+    } else {
+      router.push("/login");
+    }
   };
 
   return (

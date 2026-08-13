@@ -145,24 +145,33 @@ const USER_KEY = "rag_user_data";
 export const authStorage = {
   getToken: () => (typeof window !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null),
   setToken: (token: string) => {
-    localStorage.setItem(TOKEN_KEY, token);
+    if (typeof window !== "undefined") {
+      localStorage.setItem(TOKEN_KEY, token);
+    }
     if (typeof document !== "undefined") {
       document.cookie = `${TOKEN_KEY}=${token}; path=/; max-age=604800; samesite=lax`;
     }
   },
   clear: () => {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
-    if (typeof document !== "undefined") {
-      document.cookie = `${TOKEN_KEY}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+    if (typeof window !== "undefined") {
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(USER_KEY);
     }
+    if (typeof document !== "undefined") {
+      document.cookie = `${TOKEN_KEY}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; max-age=0; samesite=lax`;
+    }
+    clearApiCache();
   },
   getUser: (): User | null => {
     if (typeof window === "undefined") return null;
     const data = localStorage.getItem(USER_KEY);
     return data ? JSON.parse(data) : null;
   },
-  setUser: (user: User) => localStorage.setItem(USER_KEY, JSON.stringify(user)),
+  setUser: (user: User) => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem(USER_KEY, JSON.stringify(user));
+    }
+  },
 };
 
 // Client-side caching layer to speed up page transitions and avoid blocking loaders
