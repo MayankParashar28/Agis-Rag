@@ -43,6 +43,10 @@ class RagasEvaluationResponse(BaseModel):
     context_precision: Optional[float] = None
     context_recall: Optional[float] = None
     answer_relevancy: Optional[float] = None
+    # "ragas" = LLM-judged RAGAS metrics; "heuristic" = local lexical-overlap
+    # proxies. Exposed so callers can tell the two apart instead of assuming
+    # every number came from RAGAS.
+    method: Optional[str] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

@@ -41,7 +41,8 @@ export default function AdminDocumentManagementPage() {
 
   const fetchDocsSilently = async () => {
     try {
-      const docList = await api.listAllDocumentsAdmin();
+      // noCache: see upload page — a cached read makes the poll a no-op.
+      const docList = await api.listAllDocumentsAdmin({ noCache: true });
       setDocuments(docList);
     } catch (_) {}
   };
@@ -248,7 +249,7 @@ export default function AdminDocumentManagementPage() {
 
                       {/* Chunk Allocation Count */}
                       <td className="py-4 px-4">
-                        <div className="flex items-center space-x-1.5 text-xs text-amber-400 font-bold">
+                        <div className="flex items-center space-x-1.5 text-xs text-amber-700 font-bold">
                           <Layers className="w-3.5 h-3.5" />
                           <span>{doc.chunk_count.toLocaleString()}</span>
                         </div>

@@ -16,7 +16,9 @@ from app.services.models import get_embedding_model, get_reranker
 class RetrievalPipeline:
     def __init__(self):
         # Qdrant client
-        self.qclient = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
+        self.qclient = QdrantClient(
+            url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY, timeout=30
+        )
         
         # Dense Embedding Model and CrossEncoder Reranker from shared registry
         self.embed_model = get_embedding_model()
@@ -73,85 +75,113 @@ class RetrievalPipeline:
         return fused_results
 
     async def search_hybrid(
-        self, 
-        db: AsyncSession, 
-        kb_id: uuid.UUID, 
-        query: str, 
+        self,
+        db: AsyncSession,
+        kb_id: uuid.UUID,
+        query: str,
         document_ids: Optional[List[uuid.UUID]] = None,
-        top_k: int = 15
+        top_k: Optional[int] = None,
+        timings: Optional[Dict[str, float]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Performs Hybrid Search (PostgreSQL FTS + Vector Search) and merges results.
+
+        If `timings` is given it is populated in place with real measured stage
+        durations in seconds: "embedding", "vector_search" and "sparse_search".
+        Callers use these for telemetry instead of estimating a split.
         """
+        if top_k is None:
+            top_k = settings.RETRIEVAL_TOP_K
+        if timings is None:
+            timings = {}
+        timings.setdefault("embedding", 0.0)
         # 1. Vector Search
-        collection_name = self._get_collection_name(kb_id)
-        
-        # Verify collection exists
-        collections = self.qclient.get_collections().collections
-        if not any(c.name == collection_name for c in collections):
-            return []
-
-        # Try to get embedding from Redis cache
-        import hashlib
-        import json
-        from app.core.redis_client import redis_client
-
-        query_hash = hashlib.md5(query.strip().lower().encode('utf-8')).hexdigest()
-        redis_key = f"emb:{query_hash}"
-        query_vector = None
-
-        if redis_client:
-            try:
-                cached_vec = await redis_client.get(redis_key)
-                if cached_vec:
-                    query_vector = json.loads(cached_vec)
-                    logger.info(f"RetrievalPipeline: Embedding cache hit for query: '{query}'")
-            except Exception as re:
-                logger.warning(f"Failed to fetch embedding from Redis cache: {re}")
-
-        if query_vector is None:
-            # Generate query embedding asynchronously in threadpool to prevent blocking the event loop
-            import asyncio
-            query_vector = await asyncio.to_thread(
-                self.embed_model.encode, query, normalize_embeddings=True
-            )
-            query_vector = query_vector.tolist()
-            
-            if redis_client:
-                try:
-                    await redis_client.setex(redis_key, 86400, json.dumps(query_vector))
-                    logger.info(f"RetrievalPipeline: Cached embedding for query: '{query}'")
-                except Exception as re:
-                    logger.warning(f"Failed to cache embedding in Redis: {re}")
-        
-        qfilter = None
-        if document_ids:
-            qfilter = qmodels.Filter(
-                should=[
-                    qmodels.FieldCondition(
-                        key="doc_id",
-                        match=qmodels.MatchValue(value=str(doc_id))
-                    )
-                    for doc_id in document_ids
-                ]
-            )
-            
-        query_res = self.qclient.query_points(
-            collection_name=collection_name,
-            query=query_vector,
-            query_filter=qfilter,
-            limit=top_k
-        )
-        vector_hits = query_res.points
-        
+        #
+        # The dense half is optional. Qdrant may be unreachable - a deployment
+        # without an instance at QDRANT_URL - or simply hold no collection for
+        # this KB yet. Neither is a reason to answer nothing, because the
+        # Postgres FTS below can still match. Previously an unreachable Qdrant
+        # raised ResponseHandlingException straight out of the request, and a
+        # missing collection hit `return []` before the sparse search ever ran.
         vector_results = []
-        for hit in vector_hits:
-            doc_info = hit.payload.copy()
-            doc_info["score"] = hit.score
-            vector_results.append(doc_info)
+        collection_name = self._get_collection_name(kb_id)
+        try:
+            collections = self.qclient.get_collections().collections
+            if any(c.name == collection_name for c in collections):
+
+                # Try to get embedding from Redis cache
+                import hashlib
+                import json
+                from app.core.redis_client import redis_client
+
+                query_hash = hashlib.md5(query.strip().lower().encode('utf-8')).hexdigest()
+                redis_key = f"emb:{query_hash}"
+                query_vector = None
+
+                if redis_client:
+                    try:
+                        cached_vec = await redis_client.get(redis_key)
+                        if cached_vec:
+                            query_vector = json.loads(cached_vec)
+                            logger.info(f"RetrievalPipeline: Embedding cache hit for query: '{query}'")
+                    except Exception as re:
+                        logger.warning(f"Failed to fetch embedding from Redis cache: {re}")
+
+                if query_vector is None:
+                    # Generate query embedding asynchronously in threadpool to prevent blocking the event loop
+                    import asyncio
+                    _embed_start = time.time()
+                    query_vector = await asyncio.to_thread(
+                        self.embed_model.encode, query, normalize_embeddings=True
+                    )
+                    query_vector = query_vector.tolist()
+                    timings["embedding"] = time.time() - _embed_start
+            
+                    if redis_client:
+                        try:
+                            await redis_client.setex(redis_key, 86400, json.dumps(query_vector))
+                            logger.info(f"RetrievalPipeline: Cached embedding for query: '{query}'")
+                        except Exception as re:
+                            logger.warning(f"Failed to cache embedding in Redis: {re}")
+        
+                qfilter = None
+                if document_ids:
+                    qfilter = qmodels.Filter(
+                        should=[
+                            qmodels.FieldCondition(
+                                key="doc_id",
+                                match=qmodels.MatchValue(value=str(doc_id))
+                            )
+                            for doc_id in document_ids
+                        ]
+                    )
+            
+                _vec_start = time.time()
+                query_res = self.qclient.query_points(
+                    collection_name=collection_name,
+                    query=query_vector,
+                    query_filter=qfilter,
+                    limit=top_k
+                )
+                timings["vector_search"] = time.time() - _vec_start
+                vector_hits = query_res.points
+        
+                vector_results = []
+                for hit in vector_hits:
+                    doc_info = hit.payload.copy()
+                    doc_info["score"] = hit.score
+                    vector_results.append(doc_info)
+        except Exception as e:
+            logger.warning(
+                f"Vector search unavailable ({type(e).__name__}); answering "
+                f"from Postgres FTS alone: {e}"
+            )
+            vector_results = []
+        timings.setdefault("vector_search", 0.0)
 
         # 2. Sparse Search using PostgreSQL Full-Text Search (PG FTS)
         bm25_results = []
+        _fts_start = time.time()
         try:
             fts_query = (
                 select(
@@ -192,6 +222,7 @@ class RetrievalPipeline:
         except Exception as e:
             logger.error(f"PostgreSQL FTS failed: {str(e)}")
             bm25_results = []
+        timings["sparse_search"] = time.time() - _fts_start
 
         # 3. Fuse rankings
         fused = self.reciprocal_rank_fusion(vector_results, bm25_results)
@@ -205,13 +236,18 @@ class RetrievalPipeline:
         document_ids: Optional[List[uuid.UUID]] = None
     ) -> Dict[str, Any]:
         """
-        Retrieves top 15 hybrid matches and reranks them to top 5 using BGE Reranker.
+        Retrieves RETRIEVAL_TOP_K hybrid matches and reranks them down to
+        RERANK_TOP_N using the configured cross-encoder.
         """
         start_time = time.time()
         
         # Step 1: Hybrid Search (PG FTS + Vector)
         hybrid_start = time.time()
-        candidates = await self.search_hybrid(db, kb_id, query, document_ids, top_k=15)
+        stage_timings: Dict[str, float] = {}
+        candidates = await self.search_hybrid(
+            db, kb_id, query, document_ids,
+            top_k=settings.RETRIEVAL_TOP_K, timings=stage_timings
+        )
         retrieval_latency = time.time() - hybrid_start
         
         if not candidates:
@@ -241,7 +277,7 @@ class RetrievalPipeline:
             scored_candidates.append(c_copy)
             
         scored_candidates.sort(key=lambda x: x["rerank_score"], reverse=True)
-        top_5 = scored_candidates[:5]
+        top_5 = scored_candidates[:settings.RERANK_TOP_N]
         
         for c in top_5:
             # Rerank score is already a probability (0-1), use it directly
@@ -252,6 +288,9 @@ class RetrievalPipeline:
             "candidates_pre_rerank": candidates[:10],
             "retrieval_latency": retrieval_latency,
             "rerank_latency": rerank_latency,
+            "embedding_latency": stage_timings.get("embedding", 0.0),
+            "vector_search_latency": stage_timings.get("vector_search", 0.0),
+            "sparse_search_latency": stage_timings.get("sparse_search", 0.0),
             "total_latency": time.time() - start_time
         }
 

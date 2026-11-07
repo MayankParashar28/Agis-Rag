@@ -61,6 +61,9 @@ function ChatPageContent() {
 
   // NotebookLM Checklist Sources
   const [kbDocs, setKbDocs] = useState<any[]>([]);
+  // Probed live by the backend. The header used to assert "BM25 + Qdrant"
+  // unconditionally, which is wrong on a deployment that runs no Qdrant.
+  const [vectorSearchLive, setVectorSearchLive] = useState<boolean | null>(null);
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
   const [docsLoading, setDocsLoading] = useState(false);
 
@@ -95,6 +98,9 @@ function ChatPageContent() {
       return;
     }
     initChat();
+    api.getConfigStatus()
+      .then((c) => setVectorSearchLive(Boolean(c?.qdrant_connected)))
+      .catch(() => setVectorSearchLive(null));
   }, [router]);
 
   useEffect(() => {
@@ -316,8 +322,10 @@ function ChatPageContent() {
     }
   };
 
-  const handleCreateConversation = async (kbId: string) => {
-    if (!kbId) return;
+  // Returns the new conversation id so a caller that needs it immediately -
+  // sending the first message - does not have to wait for the state update.
+  const handleCreateConversation = async (kbId: string): Promise<string | null> => {
+    if (!kbId) return null;
     try {
       const kbName = kbs.find((k) => k.id === kbId)?.name || "Chat";
       const newConv = await api.createConversation(kbId, `Chat - ${kbName}`);
@@ -328,8 +336,9 @@ function ChatPageContent() {
       setStreamingCitations([]);
       setAgentStatus(null);
       setRetrievalStats(null);
+      return newConv.id;
     } catch (err) {
-      
+      return null;
     }
   };
 
@@ -397,7 +406,19 @@ function ChatPageContent() {
   const handleSendMessage = async (e?: React.FormEvent, customQuery?: string) => {
     if (e) e.preventDefault();
     const queryText = (customQuery || query).trim();
-    if (!queryText || isStreaming || !activeConvId) return;
+    if (!queryText || isStreaming) return;
+
+    // The input used to sit disabled until a conversation existed, so a fresh
+    // visit to /chat offered a dead box under a panel inviting you to type.
+    // Create the conversation on the first message instead - and only then,
+    // so merely opening the page leaves no empty conversations behind.
+    let convId = activeConvId;
+    if (!convId) {
+      if (!selectedKBId) return;
+      const created = await handleCreateConversation(selectedKBId);
+      if (!created) return;
+      convId = created;
+    }
 
     setQuery("");
     setIsStreaming(true);
@@ -421,7 +442,7 @@ function ChatPageContent() {
 
     const cancelStream = api.streamMessage(
       {
-        conversation_id: activeConvId,
+        conversation_id: convId,
         query: queryText,
         web_search_enabled: webSearchEnabled,
         document_ids: selectedDocIds.length > 0 ? selectedDocIds : undefined
@@ -440,6 +461,15 @@ function ChatPageContent() {
           finalCitations = data.citations || [];
           setStreamingCitations(finalCitations);
           finalMetadata = data;
+        } else if (event === "confidence") {
+          // The judged score arrives after the metadata packet so citations do
+          // not wait on the judge. It replaces the provisional lexical figure.
+          setAgentStatus("Auditing faithfulness...");
+          finalMetadata = {
+            ...(finalMetadata || {}),
+            confidence_score: data.confidence_score,
+            confidence_method: data.confidence_method
+          };
         }
       },
       () => {
@@ -455,7 +485,13 @@ function ChatPageContent() {
           content: accumulatedText,
           citations: finalCitations,
           latency: finalMetadata?.latency,
-          retrieval_score: finalMetadata?.confidence_score ? finalMetadata.confidence_score / 100 : 0.8,
+          // undefined, not 0.8: with no score from the server there is nothing
+          // to report, and the UI hides the field rather than showing a guess.
+          retrieval_score:
+            typeof finalMetadata?.confidence_score === "number"
+              ? finalMetadata.confidence_score / 100
+              : undefined,
+          confidence_method: finalMetadata?.confidence_method,
           query_log_id: finalMetadata?.query_log_id,
           created_at: new Date().toISOString()
         };
@@ -694,7 +730,13 @@ function ChatPageContent() {
               <span className="text-sm font-bold text-foreground block max-w-[120px] sm:max-w-none truncate">
                 {kbs.find((k) => k.id === selectedKBId)?.name || "Agentic RAG Engine"}
               </span>
-              <span className="text-[10px] text-text-muted hidden sm:block">GPT-4o + BM25 & Qdrant Hybrid Search</span>
+              <span className="text-[10px] text-text-muted hidden sm:block">
+                {vectorSearchLive === null
+                  ? "BGE reranked retrieval"
+                  : vectorSearchLive
+                    ? "Hybrid retrieval: BM25 + Qdrant, BGE reranked"
+                    : "Keyword retrieval: Postgres BM25, BGE reranked"}
+              </span>
             </div>
           </div>
 
@@ -759,16 +801,16 @@ function ChatPageContent() {
 
         {/* Warning Banner for empty Knowledge Base */}
         {selectedKBId && kbDocs.length === 0 && !docsLoading && (
-          <div className="bg-amber-500/10 border-b border-amber-500/25 px-4 sm:px-6 py-3 flex items-center justify-between text-xs text-amber-500 animate-in slide-in-from-top duration-300">
+          <div className="bg-amber-500/10 border-b border-amber-500/25 px-4 sm:px-6 py-3 flex items-center justify-between text-xs text-amber-700 animate-in slide-in-from-top duration-300">
             <div className="flex items-center space-x-2">
-              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-500" />
+              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-700" />
               <span>
                 <strong>No documents found:</strong> This knowledge base has no documents indexed. Please upload documents to enable RAG.
               </span>
             </div>
             <button
               onClick={() => router.push("/upload")}
-              className="text-[10px] font-bold uppercase tracking-wider px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-500 rounded-lg cursor-pointer transition-colors border border-amber-500/20 flex items-center gap-1.5 shrink-0"
+              className="text-[10px] font-bold uppercase tracking-wider px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-700 rounded-lg cursor-pointer transition-colors border border-amber-500/20 flex items-center gap-1.5 shrink-0"
             >
               <UploadCloud className="w-3.5 h-3.5" />
               <span>Upload Documents</span>
@@ -789,7 +831,7 @@ function ChatPageContent() {
                 ) : kbDocs.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-full text-center px-4 animate-in fade-in zoom-in duration-500">
                     <div className="w-16 h-16 bg-amber-500/10 rounded-full flex items-center justify-center mb-6 shadow-[0_0_30px_rgba(245,158,11,0.15)] border border-amber-500/20">
-                      <FileText className="w-8 h-8 text-amber-500" />
+                      <FileText className="w-8 h-8 text-amber-700" />
                     </div>
                     <h2 className="text-2xl font-bold text-foreground mb-2">No documents found for this Knowledge Base</h2>
                     <p className="text-sm text-text-muted max-w-md mb-8">
@@ -856,10 +898,22 @@ function ChatPageContent() {
                                   <span>Latency: {msg.latency.toFixed(2)}s</span>
                                 </span>
                               )}
-                              {msg.retrieval_score && (
-                                <span className="flex items-center gap-1">
+                              {msg.retrieval_score !== undefined && (
+                                <span
+                                  className="flex items-center gap-1"
+                                  title={
+                                    msg.confidence_method === "heuristic"
+                                      ? "Lexical overlap with the retrieved sources - no judge model was reachable."
+                                      : "An LLM judged the answer against the retrieved sources."
+                                  }
+                                >
                                   <Sparkles className="w-3 h-3 text-cyan-400" />
-                                  <span>Confidence: {(msg.retrieval_score * 100).toFixed(0)}%</span>
+                                  <span>
+                                    {msg.confidence_method === "heuristic"
+                                      ? "Overlap"
+                                      : "Confidence"}
+                                    : {(msg.retrieval_score * 100).toFixed(0)}%
+                                  </span>
                                 </span>
                               )}
                             </div>
@@ -993,12 +1047,12 @@ function ChatPageContent() {
                 <input
                   type="text"
                   required
-                  disabled={isStreaming || !activeConvId || (kbDocs.length === 0 && !docsLoading && !webSearchEnabled)}
+                  disabled={isStreaming || !selectedKBId || (kbDocs.length === 0 && !docsLoading && !webSearchEnabled)}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder={
-                    !activeConvId
-                      ? "Select a conversation to query..."
+                    !selectedKBId
+                      ? "Select a knowledge base to begin..."
                       : (kbDocs.length === 0 && !docsLoading)
                         ? (webSearchEnabled ? "Query using Web Search (No documents in KB)..." : "No documents in KB. Please upload documents to chat.")
                         : "Query knowledge base using agent RAG..."
@@ -1007,7 +1061,7 @@ function ChatPageContent() {
                 />
                 <button
                   type="submit"
-                  disabled={isStreaming || !query.trim() || !activeConvId || (kbDocs.length === 0 && !docsLoading && !webSearchEnabled)}
+                  disabled={isStreaming || !query.trim() || !selectedKBId || (kbDocs.length === 0 && !docsLoading && !webSearchEnabled)}
                   className="absolute right-3 p-3 bg-primary hover:bg-primary-hover text-background rounded-xl shadow-lg transition-all duration-200 disabled:opacity-50 cursor-pointer"
                 >
                   <Send className="w-4 h-4" />

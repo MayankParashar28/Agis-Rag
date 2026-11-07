@@ -69,11 +69,11 @@ export default function DashboardPage() {
   const statCards = [
     { name: "Total Users", value: stats?.total_users, icon: Users, color: "text-blue-400" },
     { name: "Total Documents", value: stats?.total_documents, icon: FileText, color: "text-emerald-400" },
-    { name: "Total Index Chunks", value: stats?.total_chunks.toLocaleString(), icon: Layers, color: "text-amber-400" },
+    { name: "Total Index Chunks", value: stats?.total_chunks.toLocaleString(), icon: Layers, color: "text-amber-700" },
     { name: "Total Queries Run", value: stats?.total_queries.toLocaleString(), icon: MessageSquare, color: "text-cyan-400" },
     { name: "Average Latency", value: stats?.average_latency ? `${stats.average_latency.toFixed(2)}s` : "0.00s", icon: Clock, color: "text-violet-400" },
     { name: "Avg Retrieval Score", value: `${((stats?.average_retrieval_score || 0) * 100).toFixed(1)}%`, icon: Award, color: "text-rose-400" },
-    { name: "User Satisfaction", value: stats?.user_satisfaction_rate !== undefined ? `${stats.user_satisfaction_rate.toFixed(1)}%` : "100.0%", icon: ThumbsUp, color: "text-pink-400" },
+    { name: "User Satisfaction", value: stats?.user_satisfaction_rate != null ? `${stats.user_satisfaction_rate.toFixed(1)}%` : "No ratings yet", icon: ThumbsUp, color: "text-pink-400" },
     { name: "Context Precision", value: stats?.average_context_precision !== undefined ? `${(stats.average_context_precision * 100).toFixed(1)}%` : "0.0%", icon: Target, color: "text-indigo-400" },
     { name: "Context Recall", value: stats?.average_context_recall !== undefined ? `${(stats.average_context_recall * 100).toFixed(1)}%` : "0.0%", icon: Compass, color: "text-teal-400" },
     { name: "Answer Relevance", value: stats?.average_answer_relevancy !== undefined ? `${(stats.average_answer_relevancy * 100).toFixed(1)}%` : "0.0%", icon: HelpCircle, color: "text-sky-400" },

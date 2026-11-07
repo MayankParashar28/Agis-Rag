@@ -3,7 +3,7 @@ import time
 import json
 import asyncio
 from datetime import datetime
-from typing import Any, List
+from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, HTTPException, status, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +21,7 @@ from app.schemas.chat import (
     MessageResponse,
     ChatQuery
 )
+from app.services.llm_providers import provider_chain, mark_exhausted
 from app.services.agent import (
     classify_query_node,
     retrieve_context_node,
@@ -30,21 +31,12 @@ from app.services.agent import (
 )
 from app.services.memory import chat_memory
 from app.core.config import settings
+import re
+
 from app.core.logging import logger
+from app.services.llm_errors import describe_llm_failure
 
 router = APIRouter()
-
-@router.get("/conversations", response_model=List[ConversationResponse])
-async def list_conversations(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
-) -> Any:
-    result = await db.execute(
-        select(Conversation)
-        .where(Conversation.user_id == current_user.id)
-        .order_by(Conversation.updated_at.desc())
-    )
-    return result.scalars().all()
 
 
 @router.post("/conversations", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
@@ -76,6 +68,27 @@ async def create_conversation(
     await db.commit()
     await db.refresh(db_obj)
     return db_obj
+
+
+@router.get("/conversations", response_model=List[ConversationResponse])
+async def list_conversations(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> Any:
+    """The caller's conversations, most recently active first.
+
+    The client has always called this; the route did not exist, so every
+    request returned 405 and the sidebar rendered empty. Conversations were
+    being created and persisted correctly - they were simply unlistable, which
+    looked like the history being wiped on every refresh.
+    """
+    result = await db.execute(
+        select(Conversation)
+        .where(Conversation.user_id == current_user.id)
+        .order_by(Conversation.updated_at.desc().nullslast(),
+                  Conversation.created_at.desc())
+    )
+    return result.scalars().all()
 
 
 @router.get("/conversations/{conv_id}/messages", response_model=List[MessageResponse])
@@ -186,9 +199,33 @@ async def stream_agentic_rag(
         context_str = ""
         citations = []
         
-        # Filter chunks by similarity threshold (0.30) to reduce hallucination
-        relevant_chunks = [c for c in state["reranked_chunks"] if c.get("similarity_score", 0.0) >= 0.30]
-        
+        # Filter chunks by rerank score to reduce hallucination (see RERANK_SCORE_THRESHOLD)
+        threshold = settings.RERANK_SCORE_THRESHOLD
+        relevant_chunks = [c for c in state["reranked_chunks"] if c.get("similarity_score", 0.0) >= threshold]
+
+        # A cross-encoder scores how well a passage answers a QUESTION. Broad
+        # instructions ("Summarize the key takeaways", "Show me any tables")
+        # score near zero against every passage even when the passage is the
+        # right one - the UI's own suggested prompts scored 3.7e-05 against a
+        # chunk that contained the whole document.
+        #
+        # So an empty list after filtering means one of two different things,
+        # and they must not be reported the same way:
+        #   1. retrieval returned nothing at all  -> genuinely no information
+        #   2. retrieval returned chunks, all below threshold -> weak match
+        # Claiming "no relevant information" in case 2 is simply false; the
+        # text was retrieved. Fall back to the best chunks and let the model
+        # decide whether it can answer from them.
+        weak_match = False
+        if not relevant_chunks and state["reranked_chunks"]:
+            weak_match = True
+            relevant_chunks = state["reranked_chunks"][:settings.RERANK_TOP_N]
+            logger.info(
+                f"All {len(state['reranked_chunks'])} chunks scored below "
+                f"{threshold}; proceeding with the top {len(relevant_chunks)} "
+                f"as a weak match rather than reporting no information."
+            )
+
         if not relevant_chunks:
             no_info_msg = "I could not find any relevant information in the uploaded documents to answer your question."
             yield f"data: {json.dumps({'event': 'token', 'text': no_info_msg})}\n\n"
@@ -214,8 +251,11 @@ async def stream_agentic_rag(
                 user_id=user_id,
                 query=query_in.query,
                 latency=time.time() - total_start,
-                embedding_latency=0.05,
-                retrieval_latency=0.1,
+                embedding_latency=state["latency_breakdown"].get("embedding", 0.0),
+                retrieval_latency=(
+                    state["latency_breakdown"].get("vector_search", 0.0)
+                    + state["latency_breakdown"].get("sparse_search", 0.0)
+                ),
                 hallucination_rate=0.0,  # 0% hallucination rate since "no info" is 100% faithful
                 retrieval_score=0.0
             )
@@ -241,11 +281,18 @@ async def stream_agentic_rag(
             
         for idx, chunk in enumerate(relevant_chunks):
             context_str += f"[Source {idx+1}] File: {chunk['filename']}, Page: {chunk.get('page_number', 'N/A')}\nContent: {chunk['content']}\n\n"
-            citations.append({
+            # Carry the source URL for web results. Without it a web citation
+            # names a page the reader has no way to open or check, which is
+            # not a citation so much as a claim about one.
+            source = chunk.get("source")
+            citation = {
                 "source_doc": chunk["filename"],
                 "page": chunk.get("page_number", 1),
                 "score": chunk.get("similarity_score", 0.0)
-            })
+            }
+            if isinstance(source, str) and source.startswith(("http://", "https://")):
+                citation["url"] = source
+            citations.append(citation)
             
         system_prompt = (
             "You are an expert Enterprise AI assistant. Answer the query using ONLY the facts explicitly mentioned in the provided sources. "
@@ -267,60 +314,72 @@ async def stream_agentic_rag(
             role = "user" if msg.get("sender") == "user" else "assistant"
             formatted_history.append({"role": role, "content": msg.get("content")})
         
-        if settings.GEMINI_API_KEY:
-            try:
-                import openai
-                client = openai.AsyncOpenAI(
-                    api_key=settings.GEMINI_API_KEY,
-                    base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
+        # Providers are tried in order rather than picked by whichever key
+        # happens to be set. The previous if/elif meant a configured Gemini key
+        # made the OpenAI branch unreachable, so an exhausted Gemini quota went
+        # straight to local synthesis while a working OpenAI key sat unused.
+        # Gemini leads because a single answer fits its free tier comfortably.
+        providers = provider_chain()
+
+        if providers:
+            import openai
+
+            answered = False
+            last_failure = None
+
+            for provider in providers:
+                emitted = False
+                try:
+                    client = (
+                        openai.AsyncOpenAI(
+                            api_key=provider.api_key, base_url=provider.base_url
+                        )
+                        if provider.base_url
+                        else openai.AsyncOpenAI(api_key=provider.api_key)
+                    )
+                    stream = await client.chat.completions.create(
+                        model=provider.model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            *formatted_history,
+                            {"role": "user", "content": query_in.query}
+                        ],
+                        temperature=0.0,
+                        stream=True
+                    )
+
+                    async for chunk in stream:
+                        token = chunk.choices[0].delta.content or ""
+                        if token:
+                            emitted = True
+                            full_response_text += token
+                            yield f"data: {json.dumps({'event': 'token', 'text': token})}\n\n"
+
+                    answered = True
+                    break
+
+                except Exception as e:
+                    last_failure = describe_llm_failure(e, provider.label)
+                    mark_exhausted(provider.label, e)
+                    logger.error(f"{provider.label} stream generation failed: {e}")
+                    # Tokens already on the wire cannot be unsent, so retrying
+                    # with another provider here would splice two answers
+                    # together. Keep the partial one instead.
+                    if emitted:
+                        answered = True
+                        break
+
+            if not answered:
+                # Dumping the raw context with an "Error..." prefix was not a
+                # synthesis and did not say what went wrong. Use the real local
+                # synthesizer and name the actual cause - a quota clears on its
+                # own, a bad key does not, and the user cannot tell them apart
+                # from a generic failure message.
+                full_response_text = synthesize_context_fallback(
+                    query_in.query,
+                    relevant_chunks,
+                    reason=last_failure,
                 )
-                stream = await client.chat.completions.create(
-                    model=settings.GEMINI_MODEL,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        *formatted_history,
-                        {"role": "user", "content": query_in.query}
-                    ],
-                    temperature=0.0,
-                    stream=True
-                )
-                
-                # Stream tokens
-                async for chunk in stream:
-                    token = chunk.choices[0].delta.content or ""
-                    if token:
-                        full_response_text += token
-                        yield f"data: {json.dumps({'event': 'token', 'text': token})}\n\n"
-                        
-            except Exception as e:
-                logger.error(f"Gemini Stream Generation API error: {str(e)}")
-                full_response_text = f"Error generating answer via Gemini. Falling back to local synthesis.\n\nContext:\n{context_str[:500]}..."
-                yield f"data: {json.dumps({'event': 'token', 'text': full_response_text})}\n\n"
-        elif settings.OPENAI_API_KEY:
-            try:
-                import openai
-                client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-                stream = await client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        *formatted_history,
-                        {"role": "user", "content": query_in.query}
-                    ],
-                    temperature=0.0,
-                    stream=True
-                )
-                
-                # Stream tokens
-                async for chunk in stream:
-                    token = chunk.choices[0].delta.content or ""
-                    if token:
-                        full_response_text += token
-                        yield f"data: {json.dumps({'event': 'token', 'text': token})}\n\n"
-                        
-            except Exception as e:
-                logger.error(f"OpenAI Stream Generation API error: {str(e)}")
-                full_response_text = f"Error generating answer via OpenAI. Falling back to local synthesis.\n\nContext:\n{context_str[:500]}..."
                 yield f"data: {json.dumps({'event': 'token', 'text': full_response_text})}\n\n"
         else:
             # Local/offline fallback streaming simulation
@@ -381,8 +440,13 @@ async def stream_agentic_rag(
             user_id=user_id,
             query=query_in.query,
             latency=total_latency,
-            embedding_latency=state["latency_breakdown"].get("retrieval", 0.1) * 0.3,
-            retrieval_latency=state["latency_breakdown"].get("retrieval", 0.1) * 0.7,
+            # Real measured stage timings (previously a fabricated 30/70 split
+            # of the single retrieval figure).
+            embedding_latency=state["latency_breakdown"].get("embedding", 0.0),
+            retrieval_latency=(
+                state["latency_breakdown"].get("vector_search", 0.0)
+                + state["latency_breakdown"].get("sparse_search", 0.0)
+            ),
             hallucination_rate=round((100.0 - fast_confidence) / 100.0, 4),
             retrieval_score=avg_retrieval_score
         )
@@ -404,32 +468,49 @@ async def stream_agentic_rag(
         await chat_memory.add_message(str(query_in.conversation_id), {"sender": "user", "content": query_in.query})
         await chat_memory.add_message(str(query_in.conversation_id), {"sender": "assistant", "content": full_response_text, "citations": citations})
         
-        # Yield final metadata packet using fast confidence score
-        yield f"data: {json.dumps({'event': 'metadata', 'query_log_id': str(query_log.id), 'citations': citations, 'confidence_score': fast_confidence, 'latency': total_latency, 'latency_breakdown': state['latency_breakdown']})}\n\n"
-        yield "data: [DONE]\n\n"
-        
-        # Spawn asynchronous deep evaluation background task
+        # Yield final metadata packet. confidence_score here is provisional -
+        # the judged figure follows in its own event a moment later, so
+        # citations and latency do not wait on the judge.
+        # weak_match tells the client these chunks were all below the rerank
+        # threshold, so the answer rests on a loose match rather than nothing.
+        yield f"data: {json.dumps({'event': 'metadata', 'query_log_id': str(query_log.id), 'citations': citations, 'confidence_score': round(fast_confidence, 2), 'confidence_method': 'provisional', 'weak_match': weak_match, 'latency': total_latency, 'latency_breakdown': state['latency_breakdown']})}\n\n"
+
+        # The LLM faithfulness judgement used to run in a fire-and-forget task
+        # that wrote to the database after the stream had closed, so the client
+        # only ever saw fast_confidence - a lexical-overlap and rerank-score
+        # blend displayed under the label "Confidence". An answer the judge
+        # scored 100/100 showed as 14% because its chunks reranked low. Await
+        # the judgement and send the real number before closing.
         state_copy = {k: v for k, v in state.items() if k != "db_session"}
         state_copy["response"] = full_response_text
-        
-        async def run_async_evaluation(log_id: uuid.UUID, state_data: Dict[str, Any]):
-            logger.info(f"Background evaluation: Starting for query log {log_id}...")
-            try:
-                eval_res = await self_evaluate_node(state_data)
-                confidence = eval_res.get("confidence_score", 100.0)
-                hallucination_rate = round((100.0 - confidence) / 100.0, 4)
-                
-                async with SessionLocal() as background_db:
-                    result = await background_db.execute(select(QueryLog).where(QueryLog.id == log_id))
-                    qlog = result.scalar_one_or_none()
-                    if qlog:
-                        qlog.hallucination_rate = hallucination_rate
-                        await background_db.commit()
-                        logger.info(f"Background evaluation: Updated query log {log_id} with hallucination rate: {hallucination_rate}")
-            except Exception as eval_err:
-                logger.error(f"Background evaluation failed: {str(eval_err)}")
-                
-        asyncio.create_task(run_async_evaluation(query_log.id, state_copy))
+
+        confidence = fast_confidence
+        confidence_method = "heuristic"
+        try:
+            eval_res = await self_evaluate_node(state_copy)
+            scored = eval_res.get("confidence_score")
+            if isinstance(scored, (int, float)):
+                confidence = float(scored)
+                confidence_method = eval_res.get("confidence_method", "llm")
+        except Exception as eval_err:
+            logger.error(f"Self-evaluation failed: {eval_err}")
+
+        yield f"data: {json.dumps({'event': 'confidence', 'confidence_score': round(confidence, 2), 'confidence_method': confidence_method})}\n\n"
+        yield "data: [DONE]\n\n"
+
+        # Persist the judged rate on a fresh session: the request session has
+        # already committed and the response body is on its way out.
+        try:
+            async with SessionLocal() as background_db:
+                result = await background_db.execute(
+                    select(QueryLog).where(QueryLog.id == query_log.id)
+                )
+                qlog = result.scalar_one_or_none()
+                if qlog:
+                    qlog.hallucination_rate = round((100.0 - confidence) / 100.0, 4)
+                    await background_db.commit()
+        except Exception as persist_err:
+            logger.error(f"Failed to persist judged confidence: {persist_err}")
 
 
 @router.post("/message")

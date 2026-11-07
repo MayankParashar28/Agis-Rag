@@ -57,6 +57,8 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # Required — the backend refuses to start without it. See .env.example.
+      - SECRET_KEY=${SECRET_KEY:?set SECRET_KEY in .env - generate with openssl rand -hex 32}
       - POSTGRES_SERVER=postgres
       - POSTGRES_USER=rag_user
       - POSTGRES_PASSWORD=rag_password
@@ -65,6 +67,9 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - LLAMAPARSE_API_KEY=${LLAMAPARSE_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
     networks:
       - rag-network
     depends_on:
@@ -80,11 +85,15 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      # NEXT_PUBLIC_* must be set at build time; they are compiled into the
+      # client bundle, so setting them under `environment` has no effect.
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3000}
+        NEXT_PUBLIC_GA_MEASUREMENT_ID: ${NEXT_PUBLIC_GA_MEASUREMENT_ID:-}
     container_name: enterprise-rag-frontend
     ports:
       - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
     networks:
       - rag-network
     depends_on:

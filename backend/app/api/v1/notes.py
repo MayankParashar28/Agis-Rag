@@ -42,11 +42,16 @@ async def create_user_note(
     """
     Create a new note (either scratchpad note or pinned chunk/response).
     """
-    # Verify KB exists
-    kb_res = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == note_in.kb_id))
+    # Verify the caller owns the KB (not merely that it exists)
+    kb_res = await db.execute(
+        select(KnowledgeBase).where(
+            KnowledgeBase.id == note_in.kb_id,
+            KnowledgeBase.user_id == current_user.id
+        )
+    )
     kb = kb_res.scalar_one_or_none()
     if not kb:
-        raise HTTPException(status_code=404, detail="Knowledge base not found.")
+        raise HTTPException(status_code=404, detail="Knowledge base not found or access denied.")
 
     db_note = UserNote(
         user_id=current_user.id,
@@ -167,7 +172,7 @@ async def synthesize_user_notes(
                 model_name = settings.GEMINI_MODEL
             else:
                 client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-                model_name = "gpt-4o"
+                model_name = settings.OPENAI_MODEL
 
             completion = await client.chat.completions.create(
                 model=model_name,

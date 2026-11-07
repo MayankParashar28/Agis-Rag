@@ -28,7 +28,7 @@ const menuItems = [
   { name: "Analytics Dashboard", href: "/analytics", icon: BarChart3, adminOnly: true },
   { name: "User Management", href: "/users", icon: Users, adminOnly: true },
   { name: "Doc Management", href: "/admin/documents", icon: Files, adminOnly: true },
-  { name: "RAGAS Evaluation", href: "/evaluation", icon: TrendingUp, adminOnly: false },
+  { name: "Evaluation", href: "/evaluation", icon: TrendingUp, adminOnly: false },
   { name: "Settings", href: "/settings", icon: Settings, adminOnly: false },
 ];
 

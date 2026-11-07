@@ -1,12 +1,16 @@
 import uuid
 from typing import Optional, Dict, Any
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
+
+from app.core.config import settings
 
 class KnowledgeBaseBase(BaseModel):
     name: str
     description: Optional[str] = None
-    embedding_model: Optional[str] = "BAAI/bge-large-en-v1.5"
+    # Defaults to the configured model rather than a literal, so overriding
+    # EMBEDDING_MODEL does not leave new knowledge bases recording a stale name.
+    embedding_model: Optional[str] = Field(default_factory=lambda: settings.EMBEDDING_MODEL)
 
 class KnowledgeBaseCreate(KnowledgeBaseBase):
     pass

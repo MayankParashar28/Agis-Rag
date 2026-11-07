@@ -46,6 +46,8 @@ export interface Message {
   }>;
   latency?: number;
   retrieval_score?: number;
+  // "llm" when a judge scored it, "heuristic" when it is a lexical proxy.
+  confidence_method?: string;
   created_at: string;
   query_log_id?: string;
   rating?: number;
@@ -131,10 +133,14 @@ export interface ObservabilityLog {
 export interface EvaluationResult {
   id: string;
   kb_id: string;
-  faithfulness: number;
-  context_precision: number;
-  context_recall: number;
-  answer_relevancy: number;
+  // Nullable: a metric the backend could not compute is null, not zero.
+  faithfulness: number | null;
+  context_precision: number | null;
+  context_recall: number | null;
+  answer_relevancy: number | null;
+  // "ragas" = LLM-judged RAGAS metrics. "heuristic" = local lexical-overlap
+  // proxies, which are NOT RAGAS metrics and must not be presented as such.
+  method?: string | null;
   created_at: string;
 }
 
@@ -149,7 +155,12 @@ export const authStorage = {
       localStorage.setItem(TOKEN_KEY, token);
     }
     if (typeof document !== "undefined") {
-      document.cookie = `${TOKEN_KEY}=${token}; path=/; max-age=604800; samesite=lax`;
+      // NOTE: this cookie cannot be HttpOnly — it is set from JS so the Next
+      // middleware can read it. That means XSS can read the token. Moving token
+      // issuance to a server route that sets an HttpOnly cookie is the real fix.
+      // Until then, at least refuse to send it in cleartext over HTTP.
+      const secure = window.location.protocol === "https:" ? "; secure" : "";
+      document.cookie = `${TOKEN_KEY}=${token}; path=/; max-age=604800; samesite=lax${secure}`;
     }
   },
   clear: () => {
@@ -194,16 +205,22 @@ export const clearApiCache = (pathPrefix?: string) => {
 };
 
 // Request wrapper
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function request<T>(
+  path: string,
+  options: RequestInit = {},
+  opts: { noCache?: boolean } = {}
+): Promise<T> {
   const method = options.method || "GET";
-  
-  // Return cached result if valid (only for GET requests)
-  if (method === "GET") {
+
+  // Return cached result if valid (only for GET requests, and only when the
+  // caller has not explicitly asked for fresh data — pollers must opt out or
+  // they just re-read the same 30s-old snapshot every tick).
+  if (method === "GET" && !opts.noCache) {
     const cached = apiCache[path];
     if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
       return cached.data as T;
     }
-  } else {
+  } else if (method !== "GET") {
     // Invalidate relevant cache sections on write operations
     if (path.startsWith("/knowledge-bases")) {
       clearApiCache("/knowledge-bases");
@@ -242,7 +259,10 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
 
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
+    // Only 401 means "your session is invalid". A 403 means "you are correctly
+    // authenticated but not allowed to do this" — signing the user out for that
+    // kicks any non-admin off the app the moment they touch an admin endpoint.
+    if (response.status === 401) {
       authStorage.clear();
       clearApiCache();
       if (typeof window !== "undefined") {
@@ -308,12 +328,14 @@ export const api = {
     fd.append("chunk_overlap", chunkOverlap.toString());
     return request<DocumentInfo>("/documents/upload", { method: "POST", body: fd });
   },
-  listDocs: (kbId: string) => request<DocumentInfo[]>(`/documents/${kbId}`),
+  listDocs: (kbId: string, opts?: { noCache?: boolean }) =>
+    request<DocumentInfo[]>(`/documents/${kbId}`, {}, opts),
   deleteDoc: (docId: string) => request<void>(`/documents/${docId}`, { method: "DELETE" }),
   reindexDoc: (docId: string) => request<DocumentInfo>(`/documents/${docId}/reindex`, { method: "POST" }),
 
   // Admin Document Management
-  listAllDocumentsAdmin: () => request<AdminDocumentInfo[]>("/documents/admin/all"),
+  listAllDocumentsAdmin: (opts?: { noCache?: boolean }) =>
+    request<AdminDocumentInfo[]>("/documents/admin/all", {}, opts),
   deleteDocumentAdmin: (docId: string) => request<void>(`/documents/admin/${docId}`, { method: "DELETE" }),
   reindexDocumentAdmin: (docId: string) => request<any>(`/documents/admin/${docId}/reindex`, { method: "POST" }),
   listDocChunks: (docId: string) => request<DocumentChunk[]>(`/documents/${docId}/chunks`),

@@ -4,8 +4,9 @@
   "scripts": {
     "start-redis": "redis-server --daemonize yes || true",
     "start-backend": "cd backend && .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000",
-    "start-worker": "cd backend && .venv/bin/celery -A app.worker.celery_app worker --loglevel=info",
+    "start-worker": "cd backend && .venv/bin/celery -A app.worker.celery_app worker --loglevel=info --pool=solo",
     "start-frontend": "cd frontend && npm run dev",
-    "dev": "npm run start-redis && npx -y concurrently \"npm run start-backend\" \"npm run start-worker\" \"npm run start-frontend\""
+    "dev": "npm run start-redis && npx -y concurrently -n qdrant,backend,worker,frontend -c magenta,cyan,yellow,green \"npm run start-qdrant\" \"npm run start-backend\" \"npm run start-worker\" \"npm run start-frontend\"",
+    "start-qdrant": "cd qdrant-bin && QDRANT__STORAGE__STORAGE_PATH=./storage QDRANT__STORAGE__SNAPSHOTS_PATH=./snapshots QDRANT__TELEMETRY_DISABLED=true ./qdrant"
   }
 }

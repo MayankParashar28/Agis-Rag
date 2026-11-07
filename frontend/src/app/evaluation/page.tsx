@@ -80,16 +80,22 @@ export default function EvaluationPage() {
     }
   };
 
-  // Format RAGAS data for line charts
+  // Format metric history for the line charts.
+  //
+  // A metric the backend could not compute is null. Plotting that as 0 would
+  // show a confident "0%" for a score nobody measured, so those runs are
+  // dropped from this metric's series instead - a missing point, not a fake one.
   const formatData = (metric: "faithfulness" | "context_precision" | "context_recall" | "answer_relevancy") => {
-    return evals.map((item, idx) => {
-      const date = new Date(item.created_at);
-      const label = `${date.getMonth() + 1}/${date.getDate()} ${date.getHours()}:${date.getMinutes()}`;
-      return {
-        label,
-        value: (item[metric] || 0) * 100
-      };
-    });
+    return evals
+      .filter((item) => item[metric] !== null && item[metric] !== undefined)
+      .map((item) => {
+        const date = new Date(item.created_at);
+        const label = `${date.getMonth() + 1}/${date.getDate()} ${date.getHours()}:${date.getMinutes()}`;
+        return {
+          label,
+          value: (item[metric] as number) * 100
+        };
+      });
   };
 
   const metricCards = [
@@ -123,11 +129,25 @@ export default function EvaluationPage() {
     }
   ];
 
+  // Scores produced by local lexical-overlap proxies are not RAGAS metrics.
+  // Say so in the UI rather than letting them read as LLM-judged results.
+  const latestMethod = evals.length > 0 ? evals[evals.length - 1].method : null;
+
   return (
     <div className="space-y-8 animate-fade-in">
-      <div className="flex justify-between items-center">
+      {latestMethod === "heuristic" && (
+        <div className="glass p-4 rounded-2xl border border-amber-500/40 text-sm text-amber-700">
+          <span className="font-bold">Heuristic scores.</span>{" "}
+          These numbers come from local lexical-overlap proxies, not from RAGAS&apos;
+          LLM-judged metrics. RAGAS needs a judge model it can reach: check that{" "}
+          <code className="font-mono">GEMINI_API_KEY</code> or{" "}
+          <code className="font-mono">OPENAI_API_KEY</code> is set and the provider still
+          has quota, then run the audit again.
+        </div>
+      )}
+      <div className="flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-center sm:gap-6">
         <div>
-          <h1 className="text-3xl font-extrabold text-foreground tracking-tight">RAGAS Evaluation</h1>
+          <h1 className="text-3xl font-extrabold text-foreground tracking-tight">Retrieval Evaluation</h1>
           <p className="text-text-muted mt-1">Audit truthfulness, relevance, and precision of RAG answers</p>
         </div>
         <button

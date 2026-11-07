@@ -15,12 +15,14 @@ from app.services.models import get_embedding_model
 class DocumentIndexer:
     def __init__(self):
         # Initialize Qdrant Client
-        self.qclient = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
+        self.qclient = QdrantClient(
+            url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY, timeout=30
+        )
         logger.info(f"Connected to Qdrant vector database at {settings.QDRANT_URL}.")
         
         # Load local BGE Embedding model from shared registry
         self.embed_model = get_embedding_model()
-        self.vector_dim = 1024
+        self.vector_dim = settings.EMBEDDING_DIM
         logger.info("Embedding model loaded successfully.")
 
     def _get_collection_name(self, kb_id: uuid.UUID) -> str:
@@ -56,6 +58,74 @@ class DocumentIndexer:
             logger.warning(f"Failed to create payload index on 'doc_id': {str(e)}")
             
         return collection_name
+
+    async def rebuild_collection_from_db(self, db, kb_id: uuid.UUID) -> int:
+        """Re-create a KB's vector collection from the chunks held in Postgres.
+
+        Postgres is the source of truth: it stores every chunk's content, page
+        and point id, so the only thing missing from a lost collection is the
+        vectors - and those are recomputable from the same text with the same
+        model. The rebuild is faithful rather than approximate: identical point
+        ids and payloads, so citations and filters keep working.
+
+        This exists because a Qdrant Cloud free cluster is suspended after a
+        week of inactivity and deleted after four. Rather than depend on a
+        keepalive ping never being missed, treat the vector store as a derived
+        index that can be rebuilt on demand.
+
+        Returns the number of points written.
+        """
+        from sqlalchemy import select
+        from app.models.knowledge import Document, DocumentChunk
+
+        rows = (await db.execute(
+            select(DocumentChunk, Document)
+            .join(Document, Document.id == DocumentChunk.doc_id)
+            .where(Document.kb_id == kb_id)
+            .order_by(DocumentChunk.chunk_index)
+        )).all()
+
+        if not rows:
+            logger.info(f"Nothing to rebuild for KB {kb_id}: no chunks in Postgres.")
+            return 0
+
+        collection_name = self.ensure_collection(kb_id)
+        logger.info(f"Rebuilding {collection_name} from {len(rows)} Postgres chunks...")
+
+        texts = [chunk.content for chunk, _ in rows]
+        vectors = await asyncio.to_thread(
+            self.embed_model.encode, texts, normalize_embeddings=True
+        )
+
+        points = []
+        for (chunk, doc), vector in zip(rows, vectors):
+            # Older chunks may predate qdrant_point_id; fall back to the row id
+            # and persist it so later rebuilds stay stable.
+            point_id = chunk.qdrant_point_id or str(chunk.id)
+            if not chunk.qdrant_point_id:
+                chunk.qdrant_point_id = point_id
+            points.append(qmodels.PointStruct(
+                id=point_id,
+                vector=vector.tolist(),
+                payload={
+                    "chunk_id": point_id,
+                    "doc_id": str(chunk.doc_id),
+                    "kb_id": str(kb_id),
+                    "content": chunk.content,
+                    "page_number": chunk.page_number,
+                    "filename": doc.filename,
+                    "source": doc.filename,
+                },
+            ))
+
+        # Batched: one upsert of a whole corpus can exceed the request limit.
+        BATCH = 128
+        for i in range(0, len(points), BATCH):
+            self.qclient.upsert(collection_name=collection_name, points=points[i:i + BATCH])
+
+        await db.commit()
+        logger.info(f"Rebuilt {collection_name} with {len(points)} points.")
+        return len(points)
 
     def split_text_recursive(self, text: str, chunk_size: int = 1000, chunk_overlap: int = 200) -> List[str]:
         """
@@ -229,7 +299,7 @@ class DocumentIndexer:
             doc.meta_info = {
                 **(doc.meta_info or {}),
                 "total_chunks": total_chunks,
-                "embedding_model": "BAAI/bge-large-en-v1.5",
+                "embedding_model": settings.EMBEDDING_MODEL,
                 "last_indexed_at": time.strftime("%Y-%m-%d %H:%M:%S")
             }
             await db.commit()

@@ -21,6 +21,12 @@ celery_app.conf.update(
     task_track_started=True,
     task_time_limit=3600,
     task_default_queue=queue_name,
+    # On macOS, Python defaults to the "spawn" start method and Celery's prefork
+    # pool then hands its children an empty task registry, so every task dies with
+    # "ValueError: not enough values to unpack (expected 3, got 0)". The solo pool
+    # sidesteps that, and is also the safe choice next to torch, which is not
+    # fork-safe. Linux/containers keep the default prefork pool.
+    worker_pool="solo" if is_local else "prefork",
     broker_connection_retry_on_startup=True,
     broker_connection_max_retries=None,  # Retry forever on connection loss
     broker_transport_options={
@@ -52,7 +58,8 @@ def run_async(func, *args, **kwargs):
             pass
 
 @celery_app.task(bind=True, name="process_document_task")
-def process_document_task(self, doc_id_str: str, file_path: str, filename: str, chunk_size: int = 1000, chunk_overlap: int = 200):
+def process_document_task(self, doc_id_str: str, file_path: str, filename: str,
+                          chunk_size: int = None, chunk_overlap: int = None):
     import uuid
     from app.core.database import SessionLocal
     from app.services.parser import document_parser
@@ -61,6 +68,10 @@ def process_document_task(self, doc_id_str: str, file_path: str, filename: str, 
     from app.models.knowledge import Document
     import time
     
+    from app.core.config import settings as _settings
+    chunk_size = _settings.DEFAULT_CHUNK_SIZE if chunk_size is None else chunk_size
+    chunk_overlap = _settings.DEFAULT_CHUNK_OVERLAP if chunk_overlap is None else chunk_overlap
+
     doc_id = uuid.UUID(doc_id_str)
     
     async def _do_work():

@@ -38,14 +38,17 @@ export default function SettingsPage() {
   const [kbCount, setKbCount] = useState<number | null>(null);
   
   // Status states
+  // Start pessimistic and unknown. Optimistic defaults made the page claim a
+  // healthy backend before /config-status had answered (or when it failed).
   const [configStatus, setConfigStatus] = useState<any>({
-    postgres_connected: true,
-    redis_connected: true,
+    postgres_connected: false,
+    redis_connected: false,
+    qdrant_connected: false,
     openai_configured: false,
     llamaparse_configured: false,
     tavily_configured: false,
     gemini_configured: false,
-    gemini_model: "gemini-2.5-flash"
+    gemini_model: null,
   });
   
   // States
@@ -143,7 +146,7 @@ export default function SettingsPage() {
         month: "long",
         day: "numeric"
       })
-    : "June 17, 2026";
+    : null;
 
   return (
     <div className="space-y-8 animate-fade-in max-w-4xl pb-12">
@@ -207,7 +210,7 @@ export default function SettingsPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-md pt-2">
             <div className="flex items-center gap-3 text-xs text-text-muted">
               <Calendar className="w-4 h-4 text-primary shrink-0" />
-              <span>Joined: {formattedDate}</span>
+              <span>Joined: {formattedDate ?? "—"}</span>
             </div>
             <div className="flex items-center gap-3 text-xs text-text-muted">
               <Shield className="w-4 h-4 text-secondary shrink-0" />
@@ -500,7 +503,7 @@ export default function SettingsPage() {
                   </div>
                   <div className="flex items-center gap-2 text-[10px] font-bold text-primary">
                     <Sparkles className="w-3.5 h-3.5" />
-                    <span>Model: {configStatus.gemini_model || "gemini-2.5-flash"}</span>
+                    <span>Model: {configStatus.gemini_model || "not configured"}</span>
                   </div>
                 </div>
 
@@ -514,7 +517,7 @@ export default function SettingsPage() {
                     <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
                       configStatus.llamaparse_configured
                         ? "bg-green-500/10 border border-green-500/25 text-green-400"
-                        : "bg-amber-500/10 border border-amber-500/25 text-amber-400"
+                        : "bg-amber-500/10 border border-amber-500/25 text-amber-700"
                     }`}>
                       {configStatus.llamaparse_configured ? "Configured" : "Offline Fallback"}
                     </span>

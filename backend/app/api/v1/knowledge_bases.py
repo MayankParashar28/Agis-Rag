@@ -9,6 +9,7 @@ from app.api.v1.auth import get_current_active_user
 from app.models.auth import User
 from app.models.knowledge import KnowledgeBase, Document, DocumentChunk
 from app.schemas.knowledge import KnowledgeBaseCreate, KnowledgeBaseResponse, KnowledgeBaseStats
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -32,7 +33,7 @@ async def create_knowledge_base(
     db_obj = KnowledgeBase(
         name=kb_in.name,
         description=kb_in.description,
-        embedding_model=kb_in.embedding_model or "BAAI/bge-large-en-v1.5",
+        embedding_model=kb_in.embedding_model or settings.EMBEDDING_MODEL,
         user_id=current_user.id
     )
     db.add(db_obj)

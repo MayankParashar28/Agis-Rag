@@ -58,9 +58,11 @@ graph TD
 ### Flow Node Explanations
 1. **Query Analysis & Classification**: Reads the user query and assesses if it relates to real-time information. If yes, it tags the query for web search.
 2. **Context Retrieval**: Queries Qdrant (cosine similarity of dense embeddings) and PostgreSQL (local BM25 ranking on metadata), fusing rankings via **Reciprocal Rank Fusion (RRF)**.
-3. **BGE Reranker**: Scores the top 50 candidates using `sentence-transformers` CrossEncoder (`BAAI/bge-reranker-large`), keeping the top 5 most relevant.
-4. **LLM Generation**: Feeds the top 5 contexts to OpenAI GPT-4o (with automatic offline synthesizer fallback).
-5. **Self-Evaluation**: Runs textual overlap checks and similarity heuristics. If confidence is below 80%, it triggers the query rewriter and loops back.
+3. **BGE Reranker**: Scores the fused candidates using a `sentence-transformers` CrossEncoder (`BAAI/bge-reranker-base`), keeping the best few. Candidate count, how many survive, and the minimum score are set by `RETRIEVAL_TOP_K` (15), `RERANK_TOP_N` (5) and `RERANK_SCORE_THRESHOLD` (0.05) - see `.env.example`.
+4. **LLM Generation**: Feeds the surviving contexts (`RERANK_TOP_N`) to the configured model (`OPENAI_MODEL`, default `gpt-4o`), with an automatic offline synthesizer fallback when no API key is set.
+5. **Self-Evaluation**: Runs textual overlap checks and similarity heuristics and reports a confidence score alongside the answer.
+
+> **Note:** the LangGraph retry loop shown above (`SelfEval -->|No, Fallback| Response`) is compiled in `services/agent.py` but is not wired into the chat endpoint, so the query-rewrite retry does **not** currently run. The streaming path in `api/v1/chat.py` performs retrieval, reranking and generation in one pass.
 
 ---
 
@@ -74,7 +76,7 @@ Follow these steps to run the platform locally on your machine:
 - Retrieve your [OpenAI API Key](https://platform.openai.com/) and [LlamaParse Key](https://cloud.llamaindex.ai/) (optional, offline fallback mode is built-in).
 
 ### Step 1: Clone and Set Up Environment Variables
-Create a `.env` file in the root directory `/Users/mayankparashar/Desktop/enterprise-rag/`:
+Copy `.env.example` to `.env` in the repository root (`cp .env.example .env`), then fill it in:
 
 ```env
 # API Keys (Optional but recommended for full AI capacity)
@@ -100,7 +102,7 @@ This will build the frontend and backend, provision databases, and start all ser
 2. Log in and go to **Knowledge Bases**.
 3. Create a Knowledge Base (e.g., "Company Knowledge").
 4. Go to **Upload Documents** and drag-and-drop a PDF, Word, TXT, or CSV file.
-5. Watch the processing status column dynamically change from `Indexing` to `Ready`.
+5. Watch the status column change from `processing` to `indexed` (or `failed` if parsing breaks).
 
 ### Step 4: Start Chatting & Debugging
 - Go to the **Chat Engine** page to query your database. Aegis will stream answers with page number citations.

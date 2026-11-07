@@ -1,0 +1,46 @@
+# Keeps the free-tier infrastructure from going idle.
+#
+# A Qdrant Cloud free cluster is suspended after one week without use and
+# deleted after four. A Hugging Face Space sleeps after ~48h idle, so the
+# backend cannot ping anything on its own schedule - the ping has to come
+# from outside. GitHub's scheduler is free and runs whether or not anything
+# else is awake.
+#
+# This is only the first line of defence. If it is ever missed, the backend
+# rebuilds a lost collection from Postgres on its next start
+# (app/main.py::_heal_vector_index), so a deleted cluster costs time, not data.
+name: keepalive
+
+on:
+  schedule:
+    # Every third day, well inside the one-week suspension window.
+    - cron: "0 6 */3 * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Touch the Qdrant cluster
+        env:
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+        run: |
+          if [ -z "$QDRANT_URL" ]; then
+            echo "QDRANT_URL secret is not set - skipping."; exit 0
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+            -H "api-key: $QDRANT_API_KEY" "$QDRANT_URL/collections")
+          echo "Qdrant /collections -> $code"
+          [ "$code" = "200" ] || exit 1
+
+      - name: Wake the Hugging Face Space
+        env:
+          HF_SPACE_URL: ${{ secrets.HF_SPACE_URL }}
+        run: |
+          if [ -z "$HF_SPACE_URL" ]; then
+            echo "HF_SPACE_URL secret is not set - skipping."; exit 0
+          fi
+          # A sleeping Space takes a while to boot; a non-200 is not fatal.
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 180 "$HF_SPACE_URL/" || echo "000")
+          echo "Space root -> $code"

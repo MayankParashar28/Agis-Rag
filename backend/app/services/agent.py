@@ -9,6 +9,8 @@ import openai
 from app.core.config import settings
 from app.core.logging import logger
 from app.services.search import retrieval_pipeline
+from app.services.llm_providers import provider_chain, mark_exhausted
+from app.services.llm_errors import describe_llm_failure
 from tenacity import retry, wait_exponential, stop_after_attempt
 import httpx
 
@@ -66,10 +68,13 @@ async def retrieve_context_node(state: AgentState) -> Dict[str, Any]:
     doc_ids = state.get("document_ids", None)
     
     retrieved_chunks = []
-    
+    stage_timings: Dict[str, float] = {}
+
     # 1. Search Knowledge Base (Hybrid Search)
-    hybrid_start = time.time()
-    kb_chunks = await retrieval_pipeline.search_hybrid(db, kb_id, query_to_search, doc_ids, top_k=15)
+    kb_chunks = await retrieval_pipeline.search_hybrid(
+        db, kb_id, query_to_search, doc_ids,
+        top_k=settings.RETRIEVAL_TOP_K, timings=stage_timings
+    )
     logger.info(f"Retrieved {len(kb_chunks)} chunks from KB.")
     retrieved_chunks.extend(kb_chunks)
     
@@ -81,10 +86,13 @@ async def retrieve_context_node(state: AgentState) -> Dict[str, Any]:
 
     latency = time.time() - start_time
     
-    # Merge existing latencies
+    # Merge existing latencies, keeping the real measured stage breakdown
     latencies = state.get("latency_breakdown", {})
     latencies["retrieval"] = latency
-    
+    latencies["embedding"] = stage_timings.get("embedding", 0.0)
+    latencies["vector_search"] = stage_timings.get("vector_search", 0.0)
+    latencies["sparse_search"] = stage_timings.get("sparse_search", 0.0)
+
     return {
         "retrieved_chunks": retrieved_chunks,
         "latency_breakdown": latencies
@@ -121,7 +129,7 @@ async def rerank_context_node(state: AgentState) -> Dict[str, Any]:
         scored.append(c_copy)
         
     scored.sort(key=lambda x: x["rerank_score"], reverse=True)
-    top_5 = scored[:5]
+    top_5 = scored[:settings.RERANK_TOP_N]
     
     # Rerank score is already a probability (0-1), use it directly
     for c in top_5:
@@ -157,7 +165,7 @@ async def _generate_llm_response(query: str, system_prompt: str) -> str:
     elif settings.OPENAI_API_KEY:
         client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY, timeout=30.0)
         completion = await client.chat.completions.create(
-            model="gpt-4o",
+            model=settings.OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": query}
@@ -175,8 +183,8 @@ async def generate_response_node(state: AgentState) -> Dict[str, Any]:
     query = state["query"]
     chunks = state["reranked_chunks"]
     
-    # Filter chunks by similarity threshold (0.30) to reduce hallucination
-    relevant_chunks = [c for c in chunks if c.get("similarity_score", 0.0) >= 0.30]
+    # Filter chunks by rerank score to reduce hallucination (see RERANK_SCORE_THRESHOLD)
+    relevant_chunks = [c for c in chunks if c.get("similarity_score", 0.0) >= settings.RERANK_SCORE_THRESHOLD]
     
     if not relevant_chunks:
         response_text = "I could not find any relevant information in the uploaded documents to answer your question."
@@ -258,33 +266,46 @@ async def self_evaluate_node(state: AgentState) -> Dict[str, Any]:
                 "Evaluate and output JSON only."
             )
             
-            if settings.GEMINI_API_KEY:
-                client = openai.AsyncOpenAI(
-                    api_key=settings.GEMINI_API_KEY,
-                    base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
-                )
-                model_name = settings.GEMINI_MODEL
-            else:
-                client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-                model_name = "gpt-4o"
-                
-            completion = await client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": eval_system_prompt},
-                    {"role": "user", "content": eval_user_prompt}
-                ],
-                temperature=0.0,
-                response_format={"type": "json_object"}
-            )
-            res_content = completion.choices[0].message.content
-            eval_data = json.loads(res_content)
-            confidence = float(eval_data.get("score", 80.0))
-            reasoning = eval_data.get("reasoning", "")
-            logger.info(f"LangGraph Agent: LLM Self-Evaluation Score: {confidence:.2f}% | Reasoning: {reasoning}")
+            # Walk the chain: a provider that is out of quota hands this to
+            # the next one instead of dropping the whole audit to regex.
+            for provider in provider_chain():
+                try:
+                    client = (
+                        openai.AsyncOpenAI(
+                            api_key=provider.api_key, base_url=provider.base_url
+                        )
+                        if provider.base_url
+                        else openai.AsyncOpenAI(api_key=provider.api_key)
+                    )
+                    completion = await client.chat.completions.create(
+                        model=provider.model,
+                        messages=[
+                            {"role": "system", "content": eval_system_prompt},
+                            {"role": "user", "content": eval_user_prompt}
+                        ],
+                        temperature=0.0,
+                        response_format={"type": "json_object"}
+                    )
+                    res_content = completion.choices[0].message.content
+                    eval_data = json.loads(res_content)
+                    confidence = float(eval_data.get("score", 80.0))
+                    reasoning = eval_data.get("reasoning", "")
+                    logger.info(
+                        f"LangGraph Agent: LLM Self-Evaluation Score: {confidence:.2f}% "
+                        f"({provider.label}) | Reasoning: {reasoning}"
+                    )
+                    break
+                except Exception as e:
+                    mark_exhausted(provider.label, e)
+                    logger.warning(
+                        f"Self-evaluation via {provider.label} failed: "
+                        f"{describe_llm_failure(e, provider.label)}"
+                    )
         except Exception as e:
             logger.error(f"Failed LLM self-evaluation: {str(e)}. Falling back to regex heuristics.")
             
+    confidence_method = "llm" if confidence is not None else "heuristic"
+
     if confidence is None:
         # Calculate Faithfulness / Hallucination Rate using heuristics
         if not chunks:
@@ -313,6 +334,9 @@ async def self_evaluate_node(state: AgentState) -> Dict[str, Any]:
     
     return {
         "confidence_score": confidence,
+        # Callers surface this: a judged score and a lexical-overlap proxy are
+        # not the same measurement and must not be presented as one.
+        "confidence_method": confidence_method,
         "latency_breakdown": latencies
     }
 
@@ -347,46 +371,71 @@ async def rewrite_query_node(state: AgentState) -> Dict[str, Any]:
 
 # --- Web Search Utility ---
 @retry(wait=wait_exponential(min=1, max=10), stop=stop_after_attempt(3))
+async def _tavily_search(query: str) -> List[Dict[str, Any]]:
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        res = await client.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": settings.TAVILY_API_KEY,
+                "query": query,
+                "max_results": settings.WEB_SEARCH_MAX_RESULTS,
+            },
+        )
+        res.raise_for_status()
+        results = res.json().get("results", [])
+
+    web_chunks = []
+    for idx, r in enumerate(results):
+        url = r.get("url")
+        if not url:
+            # Without a real URL we cannot attribute the text, so drop it rather
+            # than cite it to a placeholder domain.
+            continue
+        web_chunks.append({
+            "content": r.get("content", ""),
+            "page_number": 1,
+            "chunk_index": idx,
+            "filename": f"Web: {r.get('title', 'Search Result')}",
+            "source": url,
+        })
+    return web_chunks
+
+
 async def run_web_search(query: str) -> List[Dict[str, Any]]:
-    # Mock / Fallback web search using DuckDuckGo or static results if no keys.
-    # If Tavily API is present, use Tavily.
-    if settings.TAVILY_API_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.post(
-                    "https://api.tavily.com/search",
-                    json={"api_key": settings.TAVILY_API_KEY, "query": query, "max_results": 3}
-                )
-                res.raise_for_status()
-                results = res.json().get("results", [])
-                web_chunks = []
-                for idx, r in enumerate(results):
-                    web_chunks.append({
-                        "content": r.get("content", ""),
-                        "page_number": 1,
-                        "chunk_index": idx,
-                        "filename": f"Web: {r.get('title', 'Search Result')}",
-                        "source": r.get("url", "https://tavily.com")
-                    })
-                return web_chunks
-        except Exception as e:
-            logger.error(f"Tavily search error after retries: {str(e)}")
-            raise e
-            
-    # Mock Search
-    logger.info("No Tavily API key or request failed. Returning mock web search result.")
-    return [{
-        "content": f"Mock web search results explaining: {query}. The latest developments in 2026 indicate that AI agents are increasingly orchestration-based.",
-        "page_number": 1,
-        "chunk_index": 0,
-        "filename": "Web: Search API",
-        "source": "https://google.com"
-    }]
-
-
-def synthesize_context_fallback(query: str, chunks: List[Dict[str, Any]]) -> str:
     """
-    Synthesizes a beautiful markdown response locally from retrieved context when OpenAI is unavailable.
+    Real web search via Tavily, or no results at all.
+
+    This deliberately returns [] instead of placeholder text when search is
+    unavailable. The previous implementation synthesised a fake result and
+    attributed it to https://google.com, which reached the user as a genuine
+    citation — fabricated sources are worse than a missing answer.
+    """
+    if not settings.TAVILY_API_KEY:
+        logger.warning(
+            "Web search requested but TAVILY_API_KEY is not configured; "
+            "returning no web results."
+        )
+        return []
+
+    try:
+        return await _tavily_search(query)
+    except Exception as e:
+        # Degrade to knowledge-base-only rather than failing the whole query.
+        logger.error(f"Tavily search failed after retries: {e}. Continuing without web results.")
+        return []
+
+
+def synthesize_context_fallback(
+    query: str,
+    chunks: List[Dict[str, Any]],
+    reason: Optional[str] = None,
+) -> str:
+    """Build a local markdown answer from retrieved context when no LLM answered.
+
+    `reason` states why the LLM did not answer. It matters: a rate limit is
+    temporary and clears itself, while a missing key needs the operator to act.
+    Defaulting the message to "no OpenAI API key was detected" was wrong
+    whenever the real cause was a quota or a network error.
     """
     if not chunks:
         return "I could not find any relevant information in the uploaded documents to answer your question."
@@ -404,7 +453,12 @@ def synthesize_context_fallback(query: str, chunks: List[Dict[str, Any]]) -> str
         resp += f"**{idx+1}. From {filename} (Page {page}, Similarity: {score:.2f})**:\n"
         resp += f"> {snippet}...\n\n"
         
-    resp += "\n*Note: This response was synthesized locally using document snippet extraction because no OpenAI API key was detected in the backend `.env` file.*"
+    if reason is None:
+        reason = "no LLM API key is configured in the backend `.env` file"
+    resp += (
+        "\n*Note: this response was assembled locally from document snippets, "
+        f"not written by a language model, because {reason}.*"
+    )
     return resp
 
 

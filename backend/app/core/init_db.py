@@ -1,5 +1,6 @@
 from app.core.database import engine, Base
-# Import all models to ensure they are registered with Base.metadata
+# Import all models so they are registered with Base.metadata before create_all
+import app.models  # noqa: F401
 from app.core.logging import logger
 
 async def init_db() -> None:

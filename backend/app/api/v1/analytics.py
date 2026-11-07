@@ -6,6 +6,7 @@ from sqlalchemy import select, func
 
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.logging import logger
 from app.api.v1.auth import get_current_admin_user, get_current_active_user
 from app.models.auth import User
 from app.models.knowledge import Document, DocumentChunk
@@ -53,7 +54,9 @@ async def get_admin_dashboard_stats(
     total_ratings = row.total_ratings if row and row.total_ratings is not None else 0
     helpful_ratings = row.helpful_ratings if row and row.helpful_ratings is not None else 0
     
-    user_satisfaction_rate = (helpful_ratings / total_ratings * 100.0) if total_ratings > 0 else 100.0
+    # None, not 100.0: with no ratings there is no satisfaction rate to report.
+    # Defaulting to a perfect score invented a metric out of missing data.
+    user_satisfaction_rate = (helpful_ratings / total_ratings * 100.0) if total_ratings > 0 else None
 
     return {
         "total_users": total_users,
@@ -67,7 +70,9 @@ async def get_admin_dashboard_stats(
         "average_answer_relevancy": round(float(avg_relevancy), 4),
         "average_hallucination_rate": round(float(avg_hallucination), 4),
         "average_faithfulness": round(float(avg_faithfulness), 4),
-        "user_satisfaction_rate": round(float(user_satisfaction_rate), 2)
+        "user_satisfaction_rate": (
+            round(float(user_satisfaction_rate), 2) if user_satisfaction_rate is not None else None
+        )
     }
 
 
@@ -82,10 +87,11 @@ async def get_observability_metrics(
     # Fetch last 50 query logs to create a historical graph
     result = await db.execute(
         select(QueryLog)
-        .order_by(QueryLog.created_at.asc())
+        .order_by(QueryLog.created_at.desc())
         .limit(50)
     )
-    logs = result.scalars().all()
+    # Newest 50, re-sorted oldest-first so the time-series charts read left to right.
+    logs = list(reversed(result.scalars().all()))
     
     time_series = []
     for log in logs:
@@ -99,26 +105,67 @@ async def get_observability_metrics(
         })
     return time_series
 
-def random_val(low: float, high: float) -> float:
-    import random
-    return random.uniform(low, high)
-
-
 @router.get("/config-status")
 async def get_config_status(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ) -> Any:
     """
-    Returns configured statuses of backend databases and AI API integrations.
+    Live status of backend dependencies and AI integrations.
+
+    The connectivity flags are probed on each call. They used to be hardcoded
+    to True, which meant the Settings page reported a healthy system while the
+    database or cache was in fact unreachable.
     """
+    # --- PostgreSQL ---
+    postgres_connected = False
+    try:
+        await db.execute(select(1))
+        postgres_connected = True
+    except Exception as e:
+        logger.warning(f"config-status: PostgreSQL probe failed: {e}")
+
+    # --- Redis ---
+    redis_connected = False
+    try:
+        from app.core.redis_client import redis_client
+        if redis_client is not None:
+            await redis_client.ping()
+            redis_connected = True
+    except Exception as e:
+        logger.warning(f"config-status: Redis probe failed: {e}")
+
+    # --- Qdrant ---
+    qdrant_connected = False
+    collection_count = None
+    try:
+        import asyncio
+        from app.services.search import retrieval_pipeline
+        collections = await asyncio.to_thread(retrieval_pipeline.qclient.get_collections)
+        qdrant_connected = True
+        collection_count = len(collections.collections)
+    except Exception as e:
+        logger.warning(f"config-status: Qdrant probe failed: {e}")
+
     return {
-        "postgres_connected": True,
-        "redis_connected": True,
+        "postgres_connected": postgres_connected,
+        "redis_connected": redis_connected,
+        "qdrant_connected": qdrant_connected,
+        "qdrant_collections": collection_count,
         "openai_configured": bool(settings.OPENAI_API_KEY),
         "llamaparse_configured": bool(settings.LLAMAPARSE_API_KEY),
         "tavily_configured": bool(settings.TAVILY_API_KEY),
         "gemini_configured": bool(settings.GEMINI_API_KEY),
-        "gemini_model": settings.GEMINI_MODEL
+        "gemini_model": settings.GEMINI_MODEL,
+        "openai_model": settings.OPENAI_MODEL,
+        "embedding_model": settings.EMBEDDING_MODEL,
+        "reranker_model": settings.RERANKER_MODEL,
+        # Surface the retrieval tuning actually in effect, rather than letting
+        # the UI restate numbers from the README.
+        "retrieval_top_k": settings.RETRIEVAL_TOP_K,
+        "rerank_top_n": settings.RERANK_TOP_N,
+        "rerank_score_threshold": settings.RERANK_SCORE_THRESHOLD,
+        "web_search_available": bool(settings.TAVILY_API_KEY),
     }
 
 

@@ -3,6 +3,7 @@ import { Inter, Playfair_Display } from "next/font/google";
 import "./globals.css";
 import LayoutWrapper from "@/components/layout/LayoutWrapper";
 import Script from "next/script";
+import { SITE_URL, GA_MEASUREMENT_ID } from "@/lib/site";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -46,11 +47,10 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Agis RAG | AI Search Platform",
     description: "Next-generation Agentic Retrieval-Augmented Generation platform.",
-    url: "https://agisrag.vercel.app",
+    url: SITE_URL,
     siteName: "Agis RAG",
     locale: "en_US",
     type: "website",
-    alternateLocale: ["en_GB", "es_ES", "fr_FR"],
   },
   twitter: {
     card: "summary_large_image",
@@ -58,15 +58,10 @@ export const metadata: Metadata = {
     description: "Next-generation Agentic Retrieval-Augmented Generation platform.",
     creator: "@agis_rag",
   },
+  // No `languages` map here: there is no i18n routing, so advertising
+  // /en-US, /es-ES etc. pointed search engines at URLs that 404.
   alternates: {
-    canonical: "https://agisrag.vercel.app",
-    languages: {
-      "en-US": "https://agisrag.vercel.app/en-US",
-      "en-GB": "https://agisrag.vercel.app/en-GB",
-      "es-ES": "https://agisrag.vercel.app/es-ES",
-      "fr-FR": "https://agisrag.vercel.app/fr-FR",
-      "x-default": "https://agisrag.vercel.app",
-    },
+    canonical: SITE_URL,
   },
   other: {
     "geo.region": "US-CA",
@@ -84,19 +79,23 @@ export default function RootLayout({
   return (
     <html lang="en" className="h-full">
       <body className={`${inter.variable} ${playfair.variable} font-sans min-h-screen text-foreground bg-background antialiased`}>
-        <Script
-          src="https://www.googletagmanager.com/gtag/js?id=G-FVVHHM9J27"
-          strategy="afterInteractive"
-        />
-        <Script id="google-analytics" strategy="afterInteractive">
-          {`
-            window.dataLayer = window.dataLayer || [];
-            function gtag(){dataLayer.push(arguments);}
-            gtag('js', new Date());
+        {GA_MEASUREMENT_ID && (
+          <>
+            <Script
+              src={`https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`}
+              strategy="afterInteractive"
+            />
+            <Script id="google-analytics" strategy="afterInteractive">
+              {`
+                window.dataLayer = window.dataLayer || [];
+                function gtag(){dataLayer.push(arguments);}
+                gtag('js', new Date());
 
-            gtag('config', 'G-FVVHHM9J27');
-          `}
-        </Script>
+                gtag('config', '${GA_MEASUREMENT_ID}');
+              `}
+            </Script>
+          </>
+        )}
         {/* Global Paper Noise Overlay */}
         <div className="pointer-events-none fixed inset-0 z-50 bg-noise opacity-[0.03]" />
         

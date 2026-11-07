@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface DataPoint {
   label: string;
@@ -26,6 +26,24 @@ export function SVGLineChart({
 }: ChartProps) {
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
+  // The SVG used a fixed 500-unit coordinate system scaled to fit its box, so
+  // every unit - text included - shrank with the container. At 375px the box
+  // is ~293px wide, scaling 10px axis labels to 5.9px. Matching the viewBox to
+  // the measured width keeps the scale at 1, so a 10px label stays 10px.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [measuredWidth, setMeasuredWidth] = useState(500);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w && w > 0) setMeasuredWidth(w);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   if (data.length === 0) return null;
 
   const padding = 40;
@@ -37,7 +55,8 @@ export function SVGLineChart({
   const minValue = Math.min(...values, 0);
   const range = maxValue - minValue;
 
-  const width = 500;
+  // Floor it so very narrow containers do not collapse the plot area.
+  const width = Math.max(measuredWidth, 240);
   const chartWidth = width - padding * 2;
 
   // Generate coordinates
@@ -63,7 +82,7 @@ export function SVGLineChart({
         <h4 className="text-sm font-bold text-foreground mb-4">{title}</h4>
       </div>
 
-      <div className="relative flex-1">
+      <div ref={containerRef} className="relative flex-1">
         <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full overflow-visible">
           <defs>
             <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
@@ -138,7 +157,7 @@ export function SVGLineChart({
                 cx={p.x}
                 cy={p.y}
                 r={hoveredIdx === idx ? 6 : 4}
-                fill={hoveredIdx === idx ? "#white" : color}
+                fill={hoveredIdx === idx ? "white" : color}
                 stroke="white"
                 strokeWidth="1.5"
                 className="transition-all duration-200"

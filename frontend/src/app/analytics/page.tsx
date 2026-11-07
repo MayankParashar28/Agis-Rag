@@ -115,7 +115,7 @@ export default function AnalyticsPage() {
               unit="ms"
             />
             <SVGLineChart
-              title="Simulated Hallucination Rate"
+              title="Hallucination Rate"
               data={hallucinationData}
               color="#f43f5e"
               gradientId="hallucination-grad"
@@ -134,9 +134,9 @@ export default function AnalyticsPage() {
           <div className="glass border border-card-border rounded-3xl p-6 overflow-hidden">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-lg font-bold text-foreground">Audit Execution Logs</h3>
-              <span className="flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+              <span className="flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-card border border-card-border text-text-muted">
                 <ShieldCheck className="w-3.5 h-3.5" />
-                <span>Secure Logging Active</span>
+                <span>{logs.length} logged {logs.length === 1 ? "query" : "queries"}</span>
               </span>
             </div>
 

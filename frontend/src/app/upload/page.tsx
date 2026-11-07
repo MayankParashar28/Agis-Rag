@@ -106,7 +106,9 @@ function UploadPageContent() {
 
   const fetchDocsSilently = async () => {
     try {
-      const docsList = await api.listDocs(selectedKBId);
+      // noCache: the 30s GET cache would otherwise hand this poller the same
+      // stale snapshot every tick, so "Indexing" never flips to "Ready".
+      const docsList = await api.listDocs(selectedKBId, { noCache: true });
       setDocuments(docsList);
     } catch (_) {}
   };
@@ -274,7 +276,7 @@ function UploadPageContent() {
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
           {/* Ingestion Dropzone */}
           <div className="xl:col-span-1 space-y-6">
-            <div className="flex items-start space-x-2 p-4 rounded-2xl bg-yellow-500/10 border border-yellow-500/20 text-yellow-500 text-xs font-medium">
+            <div className="flex items-start space-x-2 p-4 rounded-2xl bg-yellow-500/10 border border-yellow-500/20 text-yellow-700 text-xs font-medium">
               <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
               <span>Warning: Maximum allowed file size is 50MB. Larger files will be rejected to prevent memory overload.</span>
             </div>

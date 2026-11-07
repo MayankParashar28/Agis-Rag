@@ -18,6 +18,7 @@ from app.schemas.knowledge import DocumentResponse, DocumentChunkResponse
 from app.services.parser import document_parser
 from app.services.indexer import document_indexer
 from app.core.logging import logger
+from app.core.config import settings
 from app.worker import process_document_task, queue_name
 
 router = APIRouter()
@@ -64,8 +65,8 @@ async def process_document_background(
 async def upload_document(
     kb_id: str = Form(...),
     file: UploadFile = File(...),
-    chunk_size: int = Form(1000),
-    chunk_overlap: int = Form(200),
+    chunk_size: int = Form(settings.DEFAULT_CHUNK_SIZE),
+    chunk_overlap: int = Form(settings.DEFAULT_CHUNK_OVERLAP),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ) -> Any:
@@ -98,12 +99,12 @@ async def upload_document(
         )
 
     # 2b. Enforce max file size (50 MB)
-    MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+    MAX_FILE_SIZE_BYTES = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
     # Read file size from content-length header or by seeking
     if file.size and file.size > MAX_FILE_SIZE_BYTES:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File too large. Maximum allowed size is 50 MB."
+            detail=f"File too large. Maximum allowed size is {settings.MAX_UPLOAD_SIZE_MB} MB."
         )
 
     # 2c. Validate content-type matches extension to prevent disguised uploads
@@ -141,6 +142,8 @@ async def upload_document(
         meta_info={
             "local_path": dest_path,
             "original_filename": file.filename,
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap,
             "upload_date": time.strftime("%Y-%m-%d %H:%M:%S") if 'time' in globals() else "now"
         }
     )
@@ -286,11 +289,16 @@ async def reindex_document(
     await db.refresh(doc)
 
     # Start indexing in background via Celery
+    # Reuse the chunk settings chosen at upload time instead of silently
+    # falling back to the task's 1000/200 defaults.
+    meta = doc.meta_info or {}
     process_document_task.apply_async(
         args=[
             str(doc.id),
             local_path,
-            doc.filename
+            doc.filename,
+            meta.get("chunk_size", settings.DEFAULT_CHUNK_SIZE),
+            meta.get("chunk_overlap", settings.DEFAULT_CHUNK_OVERLAP)
         ],
         queue=queue_name
     )
@@ -404,11 +412,16 @@ async def admin_reindex_document(
     await db.commit()
     await db.refresh(doc)
 
+    # Reuse the chunk settings chosen at upload time instead of silently
+    # falling back to the task's 1000/200 defaults.
+    meta = doc.meta_info or {}
     process_document_task.apply_async(
         args=[
             str(doc.id),
             local_path,
-            doc.filename
+            doc.filename,
+            meta.get("chunk_size", settings.DEFAULT_CHUNK_SIZE),
+            meta.get("chunk_overlap", settings.DEFAULT_CHUNK_OVERLAP)
         ],
         queue=queue_name
     )
@@ -526,7 +539,7 @@ async def generate_kb_guide(
                 model_name = settings.GEMINI_MODEL
             else:
                 client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-                model_name = "gpt-4o"
+                model_name = settings.OPENAI_MODEL
 
             completion = await client.chat.completions.create(
                 model=model_name,

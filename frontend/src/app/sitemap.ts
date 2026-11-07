@@ -1,32 +1,18 @@
 import type { MetadataRoute } from "next";
+import { SITE_URL } from "@/lib/site";
 
+/**
+ * Only publicly reachable pages belong in a sitemap. The authenticated routes
+ * that used to be listed here all redirect to /login for an anonymous crawler,
+ * and the per-locale alternates pointed at paths that do not exist because the
+ * app has no i18n routing.
+ */
 export default function sitemap(): MetadataRoute.Sitemap {
-  const baseUrl = "https://agisrag.vercel.app";
-  
-  const routes = [
-    "",
-    "/chat",
-    "/dashboard",
-    "/login",
-    "/register",
-    "/settings",
-    "/retrieval",
-    "/upload",
-    "/knowledge-bases",
-  ];
+  const lastModified = new Date();
 
-  return routes.map((route) => ({
-    url: `${baseUrl}${route}`,
-    lastModified: new Date(),
-    changeFrequency: route === "" ? "daily" : "weekly",
-    priority: route === "" ? 1.0 : route === "/chat" || route === "/dashboard" ? 0.8 : 0.5,
-    alternates: {
-      languages: {
-        "en-US": `${baseUrl}/en-US${route}`,
-        "en-GB": `${baseUrl}/en-GB${route}`,
-        "es-ES": `${baseUrl}/es-ES${route}`,
-        "fr-FR": `${baseUrl}/fr-FR${route}`,
-      },
-    },
-  }));
+  return [
+    { url: SITE_URL, lastModified, changeFrequency: "daily", priority: 1.0 },
+    { url: `${SITE_URL}/login`, lastModified, changeFrequency: "monthly", priority: 0.5 },
+    { url: `${SITE_URL}/register`, lastModified, changeFrequency: "monthly", priority: 0.5 },
+  ];
 }

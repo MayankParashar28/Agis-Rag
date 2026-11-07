@@ -18,7 +18,17 @@ COPY . .
 # Learn more here: https://nextjs.org/telemetry
 # Disable telemetry during the build.
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+
+# NEXT_PUBLIC_* values are inlined into the client bundle at BUILD time, so a
+# runtime env var in docker-compose cannot change them. Pass these as build
+# args instead:
+#   docker compose build --build-arg NEXT_PUBLIC_API_URL=https://api.example.com/api/v1
+ARG NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+ARG NEXT_PUBLIC_SITE_URL=http://localhost:3000
+ARG NEXT_PUBLIC_GA_MEASUREMENT_ID=""
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
+ENV NEXT_PUBLIC_GA_MEASUREMENT_ID=$NEXT_PUBLIC_GA_MEASUREMENT_ID
 
 RUN npm run build
 

@@ -55,33 +55,50 @@ async def get_neon_jwks():
         return None
 
 async def decode_token(token: str) -> Optional[str]:
+    """
+    Verify a bearer token and return its subject, or None.
+
+    Routing is decided by the token's own `alg` header, and each branch is
+    verified against only its own key material:
+      * RS256 -> Neon Auth, verified against the fetched JWKS.
+      * HS256 -> issued by this service, verified against SECRET_KEY.
+
+    Keying each algorithm separately is what rules out an algorithm-confusion
+    attack: a JWKS public key is never accepted as an HMAC secret, so an
+    attacker cannot re-sign an RS256 token as HS256 and have it validate.
+    """
     try:
-        # Check if Neon Auth is configured
-        if settings.NEON_AUTH_BASE_URL:
-            jwks = await get_neon_jwks()
-            if jwks:
-                # Get the unverified header to extract the kid
-                unverified_header = jwt.get_unverified_header(token)
-                rsa_key = {}
-                for key in jwks.get("keys", []):
-                    if key["kid"] == unverified_header.get("kid"):
-                        rsa_key = key
-                        break
-                if rsa_key:
-                    payload = jwt.decode(
-                        token,
-                        rsa_key,
-                        algorithms=["RS256"],
-                        audience=None,
-                        issuer=settings.NEON_AUTH_BASE_URL
-                    )
-                    return payload.get("sub")
-            # Neon Auth is configured but token didn't match any key — reject it.
-            # Do NOT fall back to local JWT to prevent forged HS256 tokens from bypassing Neon Auth.
-            return None
-        
-        # Local JWT — only used when Neon Auth is NOT configured
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        return payload.get("sub")
+        alg = jwt.get_unverified_header(token).get("alg")
     except JWTError:
         return None
+
+    # --- Locally issued token (this is what /auth/login and /auth/google mint) ---
+    if alg == settings.ALGORITHM:
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            return payload.get("sub")
+        except JWTError:
+            return None
+
+    # --- Neon Auth token ---
+    if alg == "RS256" and settings.NEON_AUTH_BASE_URL:
+        jwks = await get_neon_jwks()
+        if not jwks:
+            return None
+        try:
+            kid = jwt.get_unverified_header(token).get("kid")
+            rsa_key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+            if not rsa_key:
+                return None
+            payload = jwt.decode(
+                token,
+                rsa_key,
+                algorithms=["RS256"],
+                audience=None,
+                issuer=settings.NEON_AUTH_BASE_URL
+            )
+            return payload.get("sub")
+        except JWTError:
+            return None
+
+    return None

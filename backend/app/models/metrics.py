@@ -69,6 +69,11 @@ class Evaluation(Base):
     context_precision: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     context_recall: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     answer_relevancy: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # How these numbers were produced: "ragas" means the RAGAS library's
+    # LLM-judged metrics; "heuristic" means local lexical-overlap proxies.
+    # Without this, heuristic proxies are indistinguishable from real RAGAS
+    # metrics once they are in the table.
+    method: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships

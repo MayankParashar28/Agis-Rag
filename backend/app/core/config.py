@@ -96,13 +96,50 @@ class Settings(BaseSettings):
     BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 
+    # --- Models -------------------------------------------------------------
+    EMBEDDING_MODEL: str = "BAAI/bge-large-en-v1.5"
+    EMBEDDING_DIM: int = 1024          # must match EMBEDDING_MODEL's output size
+    RERANKER_MODEL: str = "BAAI/bge-reranker-base"
+    OPENAI_MODEL: str = "gpt-4o"
+
+    # --- Retrieval tuning ---------------------------------------------------
+    # Candidates pulled from each of the dense and sparse retrievers before fusion.
+    RETRIEVAL_TOP_K: int = 15
+    # Chunks kept after cross-encoder reranking and handed to the LLM.
+    RERANK_TOP_N: int = 5
+    # Minimum rerank score a chunk must reach to be shown to the LLM. The
+    # cross-encoder emits sigmoid scores that run far lower than an intuitive
+    # 0-1 "percent relevant" reading, so a high gate silently discards chunks
+    # that do answer the question. Raise this only with measured results.
+    RERANK_SCORE_THRESHOLD: float = 0.05
+
+    # --- Ingestion ----------------------------------------------------------
+    MAX_UPLOAD_SIZE_MB: int = 50
+    DEFAULT_CHUNK_SIZE: int = 1000
+    DEFAULT_CHUNK_OVERLAP: int = 200
+
+    # --- Rate limiting ------------------------------------------------------
+    RATE_LIMIT: str = "100/minute"
+
+    # --- Web search ---------------------------------------------------------
+    # When no TAVILY_API_KEY is configured, web search returns no results
+    # rather than inventing them. Never serve fabricated sources to users.
+    WEB_SEARCH_MAX_RESULTS: int = 3
+
     # Vector DB (Qdrant)
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_API_KEY: Optional[str] = None
 
     # Gemini Settings
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-1.5-flash"
+    # gemini-1.5-flash and gemini-2.5-flash are retired - they 404 on the
+    # OpenAI-compatible endpoint. This default is verified to stream, which
+    # the chat endpoint requires (it calls completions with stream=True).
+    GEMINI_MODEL: str = "gemini-3.5-flash"
+    # Used as the RAGAS embeddings model when Gemini is the judge. RAGAS needs
+    # embeddings as well as a chat model for answer_relevancy/context_precision.
+    GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
+    GEMINI_OPENAI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
     # LlamaParse & LlamaIndex
     LLAMAPARSE_API_KEY: Optional[str] = None
@@ -124,7 +161,10 @@ class Settings(BaseSettings):
 
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # Read the repo-root .env as well as backend/.env, so the file the README
+        # tells you to create at the project root is actually picked up no matter
+        # which directory the process is started from. Later entries win.
+        env_file=("../.env", ".env"),
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore"

@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +28,12 @@ async def lifespan(app: FastAPI):
         await init_db()
         # Initialize Redis connection
         await init_redis()
+        # Rebuild any vector collection that has gone missing. A Qdrant Cloud
+        # free cluster is suspended after a week idle and deleted after four,
+        # and a Space's own disk is ephemeral - so the index can vanish while
+        # Postgres, the source of truth, still holds every chunk. Runs in the
+        # background: it must never hold up the port binding.
+        asyncio.create_task(_heal_vector_index())
         logger.info("Startup sequence completed successfully.")
     except Exception as e:
         logger.critical(f"Startup sequence failed: {str(e)}")
@@ -39,6 +46,41 @@ async def lifespan(app: FastAPI):
     await close_redis()
     logger.info("Shutdown sequence completed.")
 
+
+async def _heal_vector_index() -> None:
+    """Re-embed KBs whose Qdrant collection is missing or empty.
+
+    Only rebuilds what is actually gone: an intact collection is left alone, so
+    a normal restart costs one cheap count per KB rather than re-embedding the
+    corpus.
+    """
+    try:
+        from sqlalchemy import select
+        from app.core.database import SessionLocal
+        from app.models.knowledge import KnowledgeBase
+        from app.services.indexer import document_indexer
+
+        async with SessionLocal() as db:
+            kbs = (await db.execute(select(KnowledgeBase))).scalars().all()
+            for kb in kbs:
+                name = document_indexer._get_collection_name(kb.id)
+                try:
+                    existing = document_indexer.qclient.get_collection(name).points_count
+                except Exception:
+                    existing = 0  # missing collection, or cluster unreachable
+                if existing:
+                    continue
+                restored = await document_indexer.rebuild_collection_from_db(db, kb.id)
+                if restored:
+                    logger.warning(
+                        f"Vector index for KB '{kb.name}' was empty; "
+                        f"rebuilt {restored} points from Postgres."
+                    )
+    except Exception as e:
+        # Never let self-healing take the service down with it.
+        logger.error(f"Vector index self-heal skipped: {e}")
+
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
@@ -46,7 +88,7 @@ app = FastAPI(
 )
 
 # Rate Limiter setup
-limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"])
+limiter = Limiter(key_func=get_remote_address, default_limits=[settings.RATE_LIMIT])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
