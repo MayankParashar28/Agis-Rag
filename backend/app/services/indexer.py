@@ -1,3 +1,4 @@
+import re
 import uuid
 import time
 from typing import List, Dict, Any
@@ -11,6 +12,18 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.models.knowledge import Document, DocumentChunk
 from app.services.models import get_embedding_model
+
+QDRANT_BATCH = 64   # vectors per upsert request
+DB_BATCH = 200      # chunk rows per flush
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def clean_text(text: str) -> str:
+    """Drop NUL and other control characters. PDF text extraction often emits
+    them, and Postgres refuses to store NUL in a text column."""
+    return _CONTROL_CHARS.sub("", text)
+
 
 class DocumentIndexer:
     def __init__(self):
@@ -152,9 +165,11 @@ class DocumentIndexer:
             result = []
             current_chunk = ""
             
-            for part in splits:
-                # Add separator back if not empty
-                part_str = part + (separator if separator_idx < len(delimiters) - 1 else "")
+            for j, part in enumerate(splits):
+                # Put the separator back between parts only - appending it to
+                # the last part added text that was never in the document.
+                is_last = j == len(splits) - 1
+                part_str = part + (separator if separator and not is_last else "")
                 
                 if len(current_chunk) + len(part_str) <= chunk_size:
                     current_chunk += part_str
@@ -180,7 +195,9 @@ class DocumentIndexer:
         # Apply overlapping
         overlapped_chunks = []
         for i, chunk in enumerate(raw_chunks):
-            if i == 0:
+            # chunk_overlap 0 must mean no overlap: prev[-0:] is the WHOLE
+            # previous chunk, which used to double every chunk.
+            if i == 0 or chunk_overlap <= 0:
                 overlapped_chunks.append(chunk)
             else:
                 # Add overlap from previous chunk if possible
@@ -215,7 +232,14 @@ class DocumentIndexer:
         if not doc:
             raise ValueError(f"Document with ID {doc_id} not found.")
 
-        collection_name = self.ensure_collection(doc.kb_id)
+        kb_id, filename = doc.kb_id, doc.filename
+        # End the read transaction now. Embedding a large document takes
+        # minutes on CPU, and hosted Postgres (Neon, poolers) closes
+        # connections that sit idle inside a transaction - the final save then
+        # failed with "connection is closed" for anything but small files.
+        await db.commit()
+
+        collection_name = self.ensure_collection(kb_id)
         
         # We will hold all PostgreSQL DocumentChunk objects and Qdrant points
         db_chunks = []
@@ -228,10 +252,14 @@ class DocumentIndexer:
         _report("chunking", msg=f"{len(parsed_pages)} page(s) read")
         all_chunks_info = []
         for page in parsed_pages:
-            content = page["content"]
+            content = clean_text(page.get("content") or "")
             page_num = page["page_number"]
+            if not content.strip():
+                continue  # image-only / blank page
             chunks_text = self.split_text_recursive(content, chunk_size, chunk_overlap)
             for idx, text in enumerate(chunks_text):
+                if not text.strip():
+                    continue
                 all_chunks_info.append({
                     "text": text,
                     "page_number": page_num
@@ -239,6 +267,11 @@ class DocumentIndexer:
                 
         # Batch embed all chunks
         all_texts = [c["text"] for c in all_chunks_info]
+        if not all_texts:
+            raise ValueError(
+                "No readable text was found in this document. If it is a scanned PDF, "
+                "set LLAMAPARSE_API_KEY so it can be OCR'd, or upload a text-based version."
+            )
         if all_texts:
             logger.info(f"DocumentIndexer: Batch embedding {len(all_texts)} chunks...")
             start_embed = time.time()
@@ -288,11 +321,11 @@ class DocumentIndexer:
                         payload={
                             "chunk_id": qdrant_point_id,
                             "doc_id": str(doc_id),
-                            "kb_id": str(doc.kb_id),
+                            "kb_id": str(kb_id),
                             "content": chunk_info["text"],
                             "page_number": chunk_info["page_number"],
-                            "filename": doc.filename,
-                            "source": doc.filename
+                            "filename": filename,
+                            "source": filename
                         }
                     )
                 )
@@ -301,18 +334,24 @@ class DocumentIndexer:
         # Transaction block to ensure consistency between Qdrant and PostgreSQL
         _report("saving", msg=f"Saving {total_chunks} chunks")
         try:
-            # Upsert vectors to Qdrant
+            # Upsert vectors in batches: one request carrying every vector of a
+            # large document is megabytes of JSON and can hit the client
+            # timeout or the server's request-size limit.
             if qdrant_points:
                 logger.info(f"Upserting {len(qdrant_points)} vectors to Qdrant collection {collection_name}...")
-                self.qclient.upsert(
-                    collection_name=collection_name,
-                    points=qdrant_points
-                )
-                
-            # Bulk save DB chunks
-            db.add_all(db_chunks)
-            
-            # Update Document status
+                for i in range(0, len(qdrant_points), QDRANT_BATCH):
+                    batch = qdrant_points[i:i + QDRANT_BATCH]
+                    await asyncio.to_thread(self.qclient.upsert, collection_name=collection_name, points=batch)
+
+            # Fresh transaction for the write (the read one was closed above).
+            result = await db.execute(select(Document).where(Document.id == doc_id))
+            doc = result.scalar_one_or_none()
+            if not doc:
+                raise ValueError("The document was deleted while it was being indexed.")
+            for i in range(0, len(db_chunks), DB_BATCH):
+                db.add_all(db_chunks[i:i + DB_BATCH])
+                await db.flush()
+
             doc.status = "indexed"
             doc.meta_info = {
                 **(doc.meta_info or {}),
@@ -320,30 +359,34 @@ class DocumentIndexer:
                 "embedding_model": settings.EMBEDDING_MODEL,
                 "last_indexed_at": time.strftime("%Y-%m-%d %H:%M:%S")
             }
+            doc.meta_info.pop("error_msg", None)
             await db.commit()
-            
+
         except Exception as e:
-            logger.error(f"Failed to commit indexed document {doc.filename}: {str(e)}")
-            await db.rollback()
-            # Rollback Qdrant inserts
-            if qdrant_points:
-                point_ids = [p.id for p in qdrant_points]
-                try:
-                    self.qclient.delete(
-                        collection_name=collection_name,
-                        points_selector=qmodels.PointIdsList(points=point_ids)
-                    )
-                    logger.info(f"Rolled back {len(point_ids)} vectors from Qdrant due to DB failure.")
-                except Exception as rollback_err:
-                    logger.critical(f"Failed to rollback Qdrant vectors after DB failure: {str(rollback_err)}")
+            logger.error(f"Failed to commit indexed document {filename}: {str(e)}")
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            # Remove every vector this run wrote, whichever batch failed.
+            try:
+                self.qclient.delete(
+                    collection_name=collection_name,
+                    points_selector=qmodels.FilterSelector(filter=qmodels.Filter(must=[
+                        qmodels.FieldCondition(key="doc_id", match=qmodels.MatchValue(value=str(doc_id)))
+                    ]))
+                )
+                logger.info(f"Rolled back vectors of {doc_id} from Qdrant after the failure.")
+            except Exception as rollback_err:
+                logger.critical(f"Failed to rollback Qdrant vectors after DB failure: {str(rollback_err)}")
             raise e
         
         _report("done", msg=f"{total_chunks} chunks indexed")
         # New content: cached answers for this KB are no longer trustworthy.
         from app.services.answer_cache import bump_kb_version_sync
-        bump_kb_version_sync(doc.kb_id)
+        bump_kb_version_sync(kb_id)
         avg_embed_latency = sum(embedding_latencies) / len(embedding_latencies) if embedding_latencies else 0.0
-        logger.info(f"Indexed document {doc.filename}. Total chunks: {total_chunks}. Avg embed latency: {avg_embed_latency:.4f}s")
+        logger.info(f"Indexed document {filename}. Total chunks: {total_chunks}. Avg embed latency: {avg_embed_latency:.4f}s")
         
         return {
             "total_chunks": total_chunks,
