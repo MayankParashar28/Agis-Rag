@@ -139,29 +139,31 @@ def process_document_task(self, doc_id_str: str, file_path: str, filename: str,
                     doc.status = "failed"
                     doc.meta_info = {
                         **(doc.meta_info or {}),
-                        "error_msg": f"Parsing failed: {str(e)}",
+                        "error_msg": f"Parsing failed: {getattr(e, 'detail', None) or str(e) or type(e).__name__}",
                         "failed_at": time.strftime("%Y-%m-%d %H:%M:%S")
                     }
                     await db.commit()
             raise e
 
         # Step 2: Index in Qdrant and update PostgreSQL status
-        async with SessionLocal() as db:
-            try:
+        try:
+            async with SessionLocal() as db:
                 await document_indexer.index_document(db, doc_id, parsed_pages, chunk_size, chunk_overlap)
-            except Exception as e:
-                progress.report(doc_id_str, "failed", message=f"Indexing failed: {e}")
+        except Exception as e:
+            progress.report(doc_id_str, "failed", message=f"Indexing failed: {e}")
+            # A fresh session: the indexing one may hold a broken connection.
+            async with SessionLocal() as db:
                 result = await db.execute(select(Document).where(Document.id == doc_id))
                 doc = result.scalar_one_or_none()
                 if doc:
                     doc.status = "failed"
                     doc.meta_info = {
                         **(doc.meta_info or {}),
-                        "error_msg": f"Indexing failed: {str(e)}",
+                        "error_msg": f"Indexing failed: {str(e)[:300]}",
                         "failed_at": time.strftime("%Y-%m-%d %H:%M:%S")
                     }
                     await db.commit()
-                raise e
+            raise e
 
     try:
         run_async(_do_work)
