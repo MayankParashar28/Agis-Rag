@@ -43,7 +43,42 @@ async def init_db() -> None:
                 pass # Already exists or table not ready
 
 
+        # Add any model column the live database is missing. create_all only
+        # creates whole tables, so a column added to a model later (e.g.
+        # evaluations.method) never reached databases created before it, and
+        # every query on that table failed with "column does not exist".
+        try:
+            async with engine.begin() as conn:
+                added = await conn.run_sync(_add_missing_columns)
+                for name in added:
+                    logger.info(f"Schema migration: added missing column {name}.")
+        except Exception as e:
+            logger.warning(f"Could not add missing columns: {e}")
+
         logger.info("Database tables initialized successfully.")
     except Exception as e:
         logger.error(f"Error initializing database tables: {str(e)}")
         raise e
+
+
+def _add_missing_columns(sync_conn) -> list:
+    """Add nullable versions of model columns that are absent in the database."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(sync_conn)
+    dialect = sync_conn.dialect
+    existing_tables = set(inspector.get_table_names())
+    added = []
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+        present = {c["name"] for c in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in present or column.primary_key:
+                continue
+            col_type = column.type.compile(dialect=dialect)
+            # Always nullable: a NOT NULL column cannot be added to a table
+            # that already has rows without a default.
+            sync_conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN IF NOT EXISTS "{column.name}" {col_type}'))
+            added.append(f"{table.name}.{column.name}")
+    return added

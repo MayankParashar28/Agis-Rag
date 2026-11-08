@@ -69,7 +69,8 @@ def report(doc_id: str, stage: str, percent: Optional[float] = None,
     try:
         doc_store.get_client().set(_key(str(doc_id)), json.dumps(payload), ex=ttl)
     except Exception as e:
-        logger.debug(f"progress.report({doc_id}, {stage}) skipped: {e}")
+        # Visible on purpose: without it a stuck progress bar has no explanation.
+        logger.warning(f"Could not record indexing progress for {doc_id} ({stage}): {e}")
 
 
 def embedding_progress(doc_id: str, done: int, total: int) -> None:

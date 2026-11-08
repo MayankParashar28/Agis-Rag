@@ -300,12 +300,10 @@ async def kb_indexing_progress(
     out = {}
     for doc_id, doc_status in docs:
         key = str(doc_id)
+        # Only real records: with none, the UI shows an honest "Indexing…"
+        # instead of a made-up percentage.
         if key in live:
             out[key] = {**live[key], "status": doc_status}
-        elif doc_status == "processing":
-            # No live record (worker not started yet, or Redis unavailable).
-            out[key] = {"doc_id": key, "stage": "queued", "label": progress.STAGE_LABELS["queued"],
-                        "percent": progress.STAGES["queued"], "message": None, "status": doc_status}
     return out
 
 
