@@ -92,7 +92,9 @@ def process_document_task(self, doc_id_str: str, file_path: str, filename: str,
     doc_id = uuid.UUID(doc_id_str)
     
     from app.core.logging import logger
-    from app.services import doc_store
+    from app.services import doc_store, progress
+
+    progress.report(doc_id_str, "receiving")
 
     # Step 0: Take the document out of Redis. GET+DEL is one atomic step, so
     # the moment the worker has the bytes the Redis copy is already gone.
@@ -125,8 +127,10 @@ def process_document_task(self, doc_id_str: str, file_path: str, filename: str,
                     "Document bytes were not found in Redis and the source file is not on this worker's disk."
                 )
             # Step 1: Parse the file first without keeping a DB connection open
+            progress.report(doc_id_str, "parsing")
             parsed_pages = await document_parser.parse_file(source_path, filename)
         except Exception as e:
+            progress.report(doc_id_str, "failed", message=f"Could not read the document: {e}")
             # If parsing fails, open DB session briefly to mark as failed
             async with SessionLocal() as db:
                 result = await db.execute(select(Document).where(Document.id == doc_id))
@@ -146,6 +150,7 @@ def process_document_task(self, doc_id_str: str, file_path: str, filename: str,
             try:
                 await document_indexer.index_document(db, doc_id, parsed_pages, chunk_size, chunk_overlap)
             except Exception as e:
+                progress.report(doc_id_str, "failed", message=f"Indexing failed: {e}")
                 result = await db.execute(select(Document).where(Document.id == doc_id))
                 doc = result.scalar_one_or_none()
                 if doc:

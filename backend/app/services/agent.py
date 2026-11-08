@@ -195,15 +195,15 @@ async def generate_response_node(state: AgentState) -> Dict[str, Any]:
         }
     
     # Build Context
-    context_str = ""
-    citations = []
-    for idx, chunk in enumerate(relevant_chunks):
-        context_str += f"[Source {idx+1}] File: {chunk['filename']}, Page: {chunk.get('page_number', 'N/A')}\nContent: {chunk['content']}\n\n"
-        citations.append({
-            "source_doc": chunk["filename"],
-            "page": chunk.get("page_number", 1),
-            "score": chunk.get("similarity_score", 0.0)
-        })
+    from app.services.guard import build_context, SOURCE_RULES
+    context_str, _ = build_context(relevant_chunks)
+    citations = [
+        {"index": idx + 1, "source_doc": c["filename"], "page": c.get("page_number", 1),
+         "score": c.get("similarity_score", 0.0), "snippet": (c.get("content") or "")[:600],
+         **({"doc_id": str(c["doc_id"])} if c.get("doc_id") else {}),
+         **({"chunk_id": str(c["chunk_id"])} if c.get("chunk_id") else {})}
+        for idx, c in enumerate(relevant_chunks)
+    ]
         
     system_prompt = (
         "You are an expert Enterprise AI assistant. Answer the query using ONLY the facts explicitly mentioned in the provided sources. "
@@ -212,6 +212,7 @@ async def generate_response_node(state: AgentState) -> Dict[str, Any]:
         "2. Do NOT use any of your own outside or general training knowledge under any circumstances.\n"
         "3. If the sources do not contain the exact facts to answer the question, state clearly: 'I cannot find the answer in the provided documents.'\n"
         "4. Cite your sources exactly when presenting facts (e.g. at the end of the sentence use [Source X]).\n\n"
+        f"{SOURCE_RULES}\n\n"
         f"Sources:\n{context_str}"
     )
     

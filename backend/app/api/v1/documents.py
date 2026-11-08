@@ -1,10 +1,14 @@
 import os
 import uuid
 import asyncio
+import hashlib
+import mimetypes
 import shutil
 import time
 from typing import Any, List
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, BackgroundTasks, Response
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -18,7 +22,8 @@ from app.models.knowledge import KnowledgeBase, Document, DocumentChunk
 from app.schemas.knowledge import DocumentResponse, DocumentChunkResponse
 from app.services.parser import document_parser
 from app.services.indexer import document_indexer
-from app.services import doc_store
+from app.services import doc_store, progress
+from app.services.url_import import fetch_url, safe_filename, UrlImportError
 from app.core.logging import logger
 from app.core.config import settings
 from app.worker import process_document_task, queue_name
@@ -39,6 +44,7 @@ async def _dispatch_processing(doc_id: str, file_path: str, filename: str,
     take the file, the job still carries the file path as a fallback.
     """
     redis_key = await asyncio.to_thread(doc_store.stage_document, doc_id, file_path)
+    await asyncio.to_thread(progress.report, doc_id, "queued")
     try:
         process_document_task.apply_async(
             args=[doc_id, file_path, filename, chunk_size, chunk_overlap],
@@ -50,6 +56,64 @@ async def _dispatch_processing(doc_id: str, file_path: str, filename: str,
         if redis_key:
             await asyncio.to_thread(doc_store.discard_document, redis_key)
         raise
+
+
+async def _find_duplicate(db: AsyncSession, kb_id: uuid.UUID, sha256: str):
+    """An existing document in this KB with identical bytes, if any."""
+    rows = await db.execute(select(Document).where(Document.kb_id == kb_id))
+    for existing in rows.scalars().all():
+        if (existing.meta_info or {}).get("sha256") == sha256 and existing.status != "failed":
+            return existing
+    return None
+
+
+async def _get_accessible_doc(db: AsyncSession, doc_id: uuid.UUID, user: User) -> Document:
+    """A document the user owns (via its KB), or any document for an admin."""
+    query = select(Document).where(Document.id == doc_id)
+    if user.role != "admin":
+        query = query.join(KnowledgeBase, KnowledgeBase.id == Document.kb_id).where(
+            KnowledgeBase.user_id == user.id)
+    doc = (await db.execute(query)).scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found or access denied.")
+    return doc
+
+
+async def _get_owned_kb(db: AsyncSession, kb_id: uuid.UUID, user: User) -> KnowledgeBase:
+    kb = (await db.execute(select(KnowledgeBase).where(
+        KnowledgeBase.id == kb_id, KnowledgeBase.user_id == user.id))).scalar_one_or_none()
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found or access denied.")
+    return kb
+
+
+async def _create_and_dispatch(db: AsyncSession, kb_id: uuid.UUID, doc_id: uuid.UUID, dest_path: str,
+                               filename: str, ext: str, sha256: str, chunk_size: int,
+                               chunk_overlap: int, extra_meta: dict | None = None) -> Document:
+    db_doc = Document(
+        id=doc_id,
+        kb_id=kb_id,
+        filename=filename,
+        file_type=ext.replace(".", "").upper(),
+        file_size=os.path.getsize(dest_path),
+        status="processing",
+        meta_info={
+            "local_path": dest_path,
+            "original_filename": filename,
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap,
+            "sha256": sha256,
+            "upload_date": time.strftime("%Y-%m-%d %H:%M:%S"),
+            **(extra_meta or {}),
+        }
+    )
+    db.add(db_doc)
+    await db.commit()
+    await db.refresh(db_doc)
+    # Stage the file in Redis and hand it to the Celery worker. The worker
+    # deletes the Redis copy as soon as it takes it.
+    await _dispatch_processing(str(db_doc.id), dest_path, filename, chunk_size, chunk_overlap)
+    return db_doc
 
 
 # Background task to parse, chunk, and index the document
@@ -142,44 +206,158 @@ async def upload_document(
         logger.warning(f"Upload content-type mismatch: ext={ext}, content_type={file.content_type}, filename={file.filename}")
         # Allow it with a warning rather than blocking (browsers are inconsistent with MIME detection)
 
-    # 3. Save file to permanent uploads directory
+    # 3. Save file to permanent uploads directory, hashing as we go and
+    #    enforcing the size cap even when the client sent no Content-Length.
     doc_id = uuid.uuid4()
     save_filename = f"{doc_id}{ext}"
     dest_path = os.path.join(UPLOAD_DIR, save_filename)
-    
+    hasher = hashlib.sha256()
+    written = 0
     try:
         async with aiofiles.open(dest_path, "wb") as buffer:
             while content := await file.read(1024 * 1024):  # 1MB chunks
+                written += len(content)
+                if written > MAX_FILE_SIZE_BYTES:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"File too large. Maximum allowed size is {settings.MAX_UPLOAD_SIZE_MB} MB."
+                    )
+                hasher.update(content)
                 await buffer.write(content)
+    except HTTPException:
+        if os.path.exists(dest_path):
+            os.remove(dest_path)
+        raise
     except Exception as e:
         logger.error(f"Failed to save file locally: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to save uploaded file.")
 
-    # 4. Create Document record in PostgreSQL with status 'processing'
-    db_doc = Document(
-        id=doc_id,
-        kb_id=kb_uuid,
-        filename=file.filename,
-        file_type=ext.replace(".", "").upper(),
-        file_size=os.path.getsize(dest_path),
-        status="processing",
-        meta_info={
-            "local_path": dest_path,
-            "original_filename": file.filename,
-            "chunk_size": chunk_size,
-            "chunk_overlap": chunk_overlap,
-            "upload_date": time.strftime("%Y-%m-%d %H:%M:%S") if 'time' in globals() else "now"
-        }
-    )
-    db.add(db_doc)
-    await db.commit()
-    await db.refresh(db_doc)
+    # 3b. Skip exact duplicates: same bytes already indexed in this KB.
+    sha256 = hasher.hexdigest()
+    duplicate = await _find_duplicate(db, kb_uuid, sha256)
+    if duplicate:
+        os.remove(dest_path)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"This file is already in the knowledge base as '{duplicate.filename}'."
+        )
 
-    # 5. Stage the file in Redis and hand it to the Celery worker. The worker
-    #    deletes the Redis copy as soon as it takes it.
-    await _dispatch_processing(str(db_doc.id), dest_path, file.filename, chunk_size, chunk_overlap)
+    # 4. Create the Document record and hand it to the worker.
+    return await _create_and_dispatch(
+        db, kb_uuid, doc_id, dest_path, file.filename, ext, sha256, chunk_size, chunk_overlap)
 
-    return db_doc
+
+class UrlImportRequest(BaseModel):
+    kb_id: uuid.UUID
+    url: str
+    chunk_size: int = settings.DEFAULT_CHUNK_SIZE
+    chunk_overlap: int = settings.DEFAULT_CHUNK_OVERLAP
+
+
+@router.post("/import-url", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
+async def import_from_url(
+    body: UrlImportRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> Any:
+    """Index a web page (or a linked PDF/DOCX/CSV/text file) by URL."""
+    await _get_owned_kb(db, body.kb_id, current_user)
+    try:
+        fetched = await fetch_url(body.url, settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024)
+    except UrlImportError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.warning(f"URL import failed for {body.url}: {e}")
+        raise HTTPException(status_code=400, detail="Could not download that link. Check the address and try again.")
+
+    sha256 = hashlib.sha256(fetched.content).hexdigest()
+    duplicate = await _find_duplicate(db, body.kb_id, sha256)
+    if duplicate:
+        raise HTTPException(status_code=409, detail=f"This page is already in the knowledge base as '{duplicate.filename}'.")
+
+    doc_id = uuid.uuid4()
+    dest_path = os.path.join(UPLOAD_DIR, f"{doc_id}{fetched.ext}")
+    async with aiofiles.open(dest_path, "wb") as f:
+        await f.write(fetched.content)
+    filename = safe_filename(fetched.title, fetched.final_url, fetched.ext)
+    return await _create_and_dispatch(
+        db, body.kb_id, doc_id, dest_path, filename, fetched.ext, sha256,
+        body.chunk_size, body.chunk_overlap, {"source_url": fetched.final_url})
+
+
+@router.get("/kb/{kb_id}/progress")
+async def kb_indexing_progress(
+    kb_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> Any:
+    """Live progress for every document in the KB that is still processing
+    (or just finished). Cheap enough to poll every second or two."""
+    await _get_owned_kb(db, kb_id, current_user)
+    rows = await db.execute(select(Document.id, Document.status).where(Document.kb_id == kb_id))
+    docs = rows.all()
+    live = await asyncio.to_thread(progress.get_many, [str(d[0]) for d in docs])
+    out = {}
+    for doc_id, doc_status in docs:
+        key = str(doc_id)
+        if key in live:
+            out[key] = {**live[key], "status": doc_status}
+        elif doc_status == "processing":
+            # No live record (worker not started yet, or Redis unavailable).
+            out[key] = {"doc_id": key, "stage": "queued", "label": progress.STAGE_LABELS["queued"],
+                        "percent": progress.STAGES["queued"], "message": None, "status": doc_status}
+    return out
+
+
+@router.get("/{doc_id}/file")
+async def download_document_file(
+    doc_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Serve the original file inline, so a citation can open it at its page."""
+    doc = await _get_accessible_doc(db, doc_id, current_user)
+    local_path = (doc.meta_info or {}).get("local_path")
+    if not local_path or not os.path.exists(local_path):
+        raise HTTPException(status_code=404, detail="The original file is no longer stored on the server.")
+    media_type = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
+    if media_type.startswith("text/"):
+        media_type += "; charset=utf-8"
+    return FileResponse(local_path, media_type=media_type, filename=doc.filename,
+                        content_disposition_type="inline",
+                        headers={"Cache-Control": "private, max-age=3600"})
+
+
+@router.get("/chunks/{chunk_id}/context")
+async def chunk_context(
+    chunk_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> Any:
+    """A cited passage plus its neighbours, for the citation viewer."""
+    chunk = (await db.execute(select(DocumentChunk).where(DocumentChunk.id == chunk_id))).scalar_one_or_none()
+    if not chunk:
+        raise HTTPException(status_code=404, detail="That passage no longer exists (the document may have been re-indexed).")
+    doc = await _get_accessible_doc(db, chunk.doc_id, current_user)
+    neighbours = []
+    if chunk.chunk_index is not None:
+        rows = await db.execute(
+            select(DocumentChunk.chunk_index, DocumentChunk.content)
+            .where(DocumentChunk.doc_id == doc.id,
+                   DocumentChunk.chunk_index.in_([chunk.chunk_index - 1, chunk.chunk_index + 1]))
+        )
+        neighbours = {r[0]: r[1] for r in rows.all()}
+    meta = doc.meta_info or {}
+    local_path = meta.get("local_path")
+    return {
+        "chunk": {"id": str(chunk.id), "content": chunk.content, "page_number": chunk.page_number,
+                  "chunk_index": chunk.chunk_index},
+        "before": neighbours.get(chunk.chunk_index - 1) if neighbours else None,
+        "after": neighbours.get(chunk.chunk_index + 1) if neighbours else None,
+        "document": {"id": str(doc.id), "kb_id": str(doc.kb_id), "filename": doc.filename,
+                     "file_type": doc.file_type, "source_url": meta.get("source_url"),
+                     "has_file": bool(local_path and os.path.exists(local_path))},
+    }
 
 
 @router.get("/{kb_id}", response_model=List[DocumentResponse])
@@ -241,6 +419,7 @@ async def delete_document(
 
     # Use indexer to delete from PostgreSQL and Qdrant
     await document_indexer.delete_document(db, doc_id)
+    await asyncio.to_thread(progress.clear, str(doc_id))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

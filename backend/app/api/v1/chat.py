@@ -30,6 +30,8 @@ from app.services.agent import (
     synthesize_context_fallback
 )
 from app.services.memory import chat_memory
+from app.services import answer_cache
+from app.services.guard import build_context, SOURCE_RULES
 from app.core.config import settings
 import re
 
@@ -138,6 +140,57 @@ async def list_messages(
     return messages_out
 
 
+def build_citation(idx: int, chunk: Dict[str, Any]) -> Dict[str, Any]:
+    """A citation the UI can open: which document, which passage, a preview."""
+    source = chunk.get("source")
+    citation = {
+        "index": idx + 1,
+        "source_doc": chunk.get("filename", "unknown"),
+        "page": chunk.get("page_number", 1),
+        "score": chunk.get("similarity_score", 0.0),
+        "snippet": (chunk.get("content") or "")[:600],
+    }
+    if chunk.get("doc_id"):
+        citation["doc_id"] = str(chunk["doc_id"])
+    if chunk.get("chunk_id"):
+        citation["chunk_id"] = str(chunk["chunk_id"])
+    # Carry the source URL for web results. Without it a web citation names a
+    # page the reader has no way to open or check.
+    if isinstance(source, str) and source.startswith(("http://", "https://")):
+        citation["url"] = source
+    return citation
+
+
+async def _serve_cached_answer(db, query_in: ChatQuery, user_id: uuid.UUID, hit: Dict[str, Any], total_start: float):
+    """Stream a cached answer and record it like any other turn."""
+    yield f"data: {json.dumps({'event': 'status', 'message': 'Found a matching answer from an earlier question...'})}\n\n"
+    answer = hit["answer"]
+    # Send in a few large pieces: instant, but still through the same token path.
+    for i in range(0, len(answer), 400):
+        yield f"data: {json.dumps({'event': 'token', 'text': answer[i:i + 400]})}\n\n"
+    latency = time.time() - total_start
+    citations = hit.get("citations", [])
+    confidence = float(hit.get("confidence", 0.0))
+    log_id = uuid.uuid4()
+    db.add(Message(conversation_id=query_in.conversation_id, sender="user", content=query_in.query))
+    db.add(Message(conversation_id=query_in.conversation_id, sender="assistant", content=answer,
+                   citations=citations, latency=latency,
+                   retrieval_score=sum(c.get("score", 0.0) for c in citations) / len(citations) if citations else 0.0,
+                   query_log_id=log_id))
+    db.add(QueryLog(id=log_id, user_id=user_id, query=query_in.query, latency=latency,
+                    embedding_latency=0.0, retrieval_latency=0.0,
+                    hallucination_rate=round((100.0 - confidence) / 100.0, 4),
+                    retrieval_score=0.0))
+    conv = (await db.execute(select(Conversation).where(Conversation.id == query_in.conversation_id))).scalar_one_or_none()
+    if conv:
+        conv.updated_at = func.now()
+    await db.commit()
+    await chat_memory.add_message(str(query_in.conversation_id), {"sender": "user", "content": query_in.query})
+    await chat_memory.add_message(str(query_in.conversation_id), {"sender": "assistant", "content": answer, "citations": citations})
+    yield f"data: {json.dumps({'event': 'metadata', 'query_log_id': str(log_id), 'citations': citations, 'confidence_score': round(confidence, 2), 'confidence_method': 'cached', 'cached': True, 'cache_similarity': hit.get('similarity'), 'latency': latency, 'latency_breakdown': {'cache': latency}})}\n\n"
+    yield "data: [DONE]\n\n"
+
+
 # --- SSE Streaming Response Generator ---
 async def stream_agentic_rag(
     query_in: ChatQuery, 
@@ -148,6 +201,22 @@ async def stream_agentic_rag(
     
     # We open our own DB session for the duration of the stream
     async with SessionLocal() as db:
+        # Step 0: Semantic answer cache. Only for the first question of a
+        # conversation (follow-ups depend on earlier turns) and never for
+        # web-search answers (those go stale).
+        cache_embedding = None
+        cache_eligible = False
+        if settings.ANSWER_CACHE_ENABLED and not query_in.web_search_enabled:
+            prior = await chat_memory.get_history(str(query_in.conversation_id), limit=1)
+            cache_eligible = not prior
+        if cache_eligible:
+            cache_embedding = await answer_cache.get_query_embedding(query_in.query)
+            hit = await answer_cache.lookup(kb_id, query_in.query, cache_embedding, query_in.document_ids)
+            if hit:
+                async for event in _serve_cached_answer(db, query_in, user_id, hit, total_start):
+                    yield event
+                return
+
         # Step 1: Query Analysis & Classification
         yield f"data: {json.dumps({'event': 'status', 'message': 'Classifying query and planning retrieval...'})}\n\n"
         await asyncio.sleep(0.1) # small pause for visual flow
@@ -279,20 +348,12 @@ async def stream_agentic_rag(
             yield "data: [DONE]\n\n"
             return
             
-        for idx, chunk in enumerate(relevant_chunks):
-            context_str += f"[Source {idx+1}] File: {chunk['filename']}, Page: {chunk.get('page_number', 'N/A')}\nContent: {chunk['content']}\n\n"
-            # Carry the source URL for web results. Without it a web citation
-            # names a page the reader has no way to open or check, which is
-            # not a citation so much as a claim about one.
-            source = chunk.get("source")
-            citation = {
-                "source_doc": chunk["filename"],
-                "page": chunk.get("page_number", 1),
-                "score": chunk.get("similarity_score", 0.0)
-            }
-            if isinstance(source, str) and source.startswith(("http://", "https://")):
-                citation["url"] = source
-            citations.append(citation)
+        # Sources go into the prompt tagged and with instruction-like text
+        # neutralised, so an uploaded document cannot steer the assistant.
+        context_str, injection_hits = build_context(relevant_chunks)
+        if injection_hits:
+            logger.warning(f"Prompt-injection guard removed {injection_hits} instruction-like span(s) from sources.")
+        citations = [build_citation(idx, chunk) for idx, chunk in enumerate(relevant_chunks)]
             
         system_prompt = (
             "You are an expert Enterprise AI assistant. Answer the query using ONLY the facts explicitly mentioned in the provided sources. "
@@ -301,6 +362,7 @@ async def stream_agentic_rag(
             "2. Do NOT use any of your own outside or general training knowledge under any circumstances.\n"
             "3. If the sources do not contain the exact facts to answer the question, state clearly: 'I cannot find the answer in the provided documents.'\n"
             "4. Cite your sources exactly when presenting facts (e.g. at the end of the sentence use [Source X]).\n\n"
+            f"{SOURCE_RULES}\n\n"
             f"Sources:\n{context_str}"
         )
         
@@ -497,6 +559,11 @@ async def stream_agentic_rag(
 
         yield f"data: {json.dumps({'event': 'confidence', 'confidence_score': round(confidence, 2), 'confidence_method': confidence_method})}\n\n"
         yield "data: [DONE]\n\n"
+
+        # Remember confident, judged, non-weak answers for near-identical questions.
+        if cache_eligible and not weak_match and not state.get("needs_web_search") and confidence_method != "heuristic":
+            await answer_cache.store(kb_id, query_in.query, cache_embedding, full_response_text,
+                                     citations, confidence, query_in.document_ids)
 
         # Persist the judged rate on a fresh session: the request session has
         # already committed and the response body is on its way out.

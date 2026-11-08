@@ -196,11 +196,19 @@ class DocumentIndexer:
         doc_id: uuid.UUID, 
         parsed_pages: List[Dict[str, Any]],
         chunk_size: int = 1000,
-        chunk_overlap: int = 200
+        chunk_overlap: int = 200,
+        report_progress: bool = True,
     ) -> Dict[str, Any]:
         """
         Processes parsed pages, chunks them, generates embeddings, and indexes in Qdrant & PostgreSQL.
+
+        Reports live progress (chunking -> embedding batch by batch -> saving)
+        to Redis so the UI can show a progress bar while this runs.
         """
+        from app.services import progress
+        def _report(stage, pct=None, msg=None):
+            if report_progress:
+                progress.report(str(doc_id), stage, pct, msg)
         # Fetch Document record
         result = await db.execute(select(Document).where(Document.id == doc_id))
         doc = result.scalar_one_or_none()
@@ -217,6 +225,7 @@ class DocumentIndexer:
         embedding_latencies = []
         
         # Collect all chunk texts across all pages to batch embed them
+        _report("chunking", msg=f"{len(parsed_pages)} page(s) read")
         all_chunks_info = []
         for page in parsed_pages:
             content = page["content"]
@@ -233,14 +242,22 @@ class DocumentIndexer:
         if all_texts:
             logger.info(f"DocumentIndexer: Batch embedding {len(all_texts)} chunks...")
             start_embed = time.time()
-            # Encode in batches to leverage vectorization & PyTorch enhancements
-            encoded_batches = await asyncio.to_thread(
-                self.embed_model.encode, 
-                all_texts, 
-                batch_size=32, 
-                show_progress_bar=False,
-                normalize_embeddings=True
-            )
+            # Encode in groups of batches so progress can be reported between
+            # them. Each group is still vectorized internally (batch_size=32).
+            _report("embedding", msg=f"0/{len(all_texts)} chunks embedded")
+            group = 128
+            encoded_batches = []
+            for g in range(0, len(all_texts), group):
+                part = await asyncio.to_thread(
+                    self.embed_model.encode,
+                    all_texts[g:g + group],
+                    batch_size=32,
+                    show_progress_bar=False,
+                    normalize_embeddings=True
+                )
+                encoded_batches.extend(part)
+                if report_progress:
+                    progress.embedding_progress(str(doc_id), min(g + group, len(all_texts)), len(all_texts))
             embed_latency = time.time() - start_embed
             # Calculate average per-chunk latency for tracking
             avg_chunk_latency = embed_latency / len(all_texts)
@@ -282,6 +299,7 @@ class DocumentIndexer:
                 total_chunks += 1
 
         # Transaction block to ensure consistency between Qdrant and PostgreSQL
+        _report("saving", msg=f"Saving {total_chunks} chunks")
         try:
             # Upsert vectors to Qdrant
             if qdrant_points:
@@ -320,6 +338,10 @@ class DocumentIndexer:
                     logger.critical(f"Failed to rollback Qdrant vectors after DB failure: {str(rollback_err)}")
             raise e
         
+        _report("done", msg=f"{total_chunks} chunks indexed")
+        # New content: cached answers for this KB are no longer trustworthy.
+        from app.services.answer_cache import bump_kb_version_sync
+        bump_kb_version_sync(doc.kb_id)
         avg_embed_latency = sum(embedding_latencies) / len(embedding_latencies) if embedding_latencies else 0.0
         logger.info(f"Indexed document {doc.filename}. Total chunks: {total_chunks}. Avg embed latency: {avg_embed_latency:.4f}s")
         
@@ -362,6 +384,8 @@ class DocumentIndexer:
         # Delete document chunks from PostgreSQL (cascaded delete handled by ForeignKey relation in DB schema)
         await db.execute(delete(Document).where(Document.id == doc_id))
         await db.commit()
+        from app.services.answer_cache import bump_kb_version_sync
+        await asyncio.to_thread(bump_kb_version_sync, doc.kb_id)
         logger.info(f"Deleted document {doc.filename} ({doc_id}) from database.")
 
 document_indexer = DocumentIndexer()
