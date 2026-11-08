@@ -1,246 +1,148 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import {
-  SearchCode,
-  Database,
-  Search,
-  ChevronRight,
-  TrendingDown,
-  Cpu,
-  Clock,
-  Sparkles,
-  FileText,
-  AlertTriangle
-} from "lucide-react";
-import { api, authStorage, KnowledgeBase } from "@/lib/api";
+import { useState } from "react";
+import { ArrowUpRight, Clock, Cpu, FileText, Search, SearchCode, TrendingDown } from "lucide-react";
+import { api, KnowledgeBase } from "@/lib/api";
+import { errorMessage, useApi, useRequireAuth } from "@/lib/hooks";
+import { Alert, Card, CardHeader, EmptyState, KBSelect, PageHeader, Skeleton, Spinner, StatCard } from "@/components/ui";
+
+interface TraceChunk {
+  content: string;
+  filename: string;
+  page_number: number | null;
+  chunk_id?: string;
+  score?: number;
+  rrf_score?: number;
+  similarity_score?: number;
+  rerank_score?: number;
+}
 
 export default function RetrievalPage() {
-  const router = useRouter();
-  
-  const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
-  const [selectedKBId, setSelectedKBId] = useState("");
+  const allowed = useRequireAuth();
+  const kbsQuery = useApi<KnowledgeBase[]>(allowed ? "/knowledge-bases" : null, api.listKBs);
+  const kbs = kbsQuery.data ?? [];
+  const [pickedKB, setPickedKB] = useState("");
+  const selectedKBId = pickedKB || kbs[0]?.id || "";
+
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [preRerank, setPreRerank] = useState<TraceChunk[] | null>(null);
+  const [postRerank, setPostRerank] = useState<TraceChunk[]>([]);
+  const [latencies, setLatencies] = useState<{ retrieval_ms: number; rerank_ms: number; total_ms: number } | null>(null);
 
-  // Search Results
-  const [preRerank, setPreRerank] = useState<any[]>([]);
-  const [postRerank, setPostRerank] = useState<any[]>([]);
-  const [latencies, setLatencies] = useState<any>(null);
-
-  useEffect(() => {
-    const token = authStorage.getToken();
-    if (!token) {
-      router.push("/login");
-      return;
-    }
-    
-    api.listKBs()
-      .then((kbList) => {
-        setKbs(kbList);
-        if (kbList.length > 0) {
-          setSelectedKBId(kbList[0].id);
-        }
-      })
-      .catch((err) => setError(err.message || "Failed to load knowledge bases."));
-  }, [router]);
-
-  const handleDebugSearch = async (e: React.FormEvent) => {
+  const run = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim() || !selectedKBId) return;
-
     setError(null);
     setLoading(true);
-    
     try {
-      const res = await api.debugRetrieval(selectedKBId, query);
+      const res = await api.debugRetrieval(selectedKBId, query.trim());
       setPreRerank(res.pre_rerank || []);
       setPostRerank(res.post_rerank || []);
       setLatencies(res.latencies || null);
-    } catch (err: any) {
-      setError(err.message || "Failed to query retrieval debugger.");
+    } catch (err) {
+      setError(errorMessage(err, "Retrieval trace failed."));
     } finally {
       setLoading(false);
     }
   };
 
+  if (!allowed) return null;
+
+  // Where did each reranked chunk sit before reranking?
+  const rankBefore = (c: TraceChunk) => {
+    const i = (preRerank ?? []).findIndex((p) => (p.chunk_id && p.chunk_id === c.chunk_id) || p.content === c.content);
+    return i === -1 ? null : i + 1;
+  };
+
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-extrabold text-foreground tracking-tight">Retrieval Viewer</h1>
-        <p className="text-text-muted mt-1">Visualize and debug the search and BGE reranking pipeline</p>
-      </div>
+    <div className="space-y-6 animate-fade-in">
+      <PageHeader
+        eyebrow="Diagnostics"
+        title="Retrieval Viewer"
+        description="See exactly which passages hybrid search finds and how the reranker reorders them before they reach the model."
+      />
 
-      {/* Query Bar */}
-      <div className="glass p-6 rounded-3xl border border-card-border">
-        <form onSubmit={handleDebugSearch} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-          <div className="md:col-span-1">
-            <label className="block text-[10px] font-bold text-text-muted uppercase tracking-wider mb-2">
-              Knowledge Base
-            </label>
-            <select
-              value={selectedKBId}
-              onChange={(e) => setSelectedKBId(e.target.value)}
-              className="w-full bg-background border border-card-border rounded-2xl py-3 px-4 text-xs text-foreground focus:outline-none focus:border-primary"
-            >
-              {kbs.map((kb) => (
-                <option key={kb.id} value={kb.id}>
-                  {kb.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="md:col-span-2">
-            <label className="block text-[10px] font-bold text-text-muted uppercase tracking-wider mb-2">
-              Search Query
-            </label>
+      <Card className="p-5">
+        <form onSubmit={run} className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] md:items-end">
+          {kbsQuery.loading ? <Skeleton className="h-16" /> : <KBSelect kbs={kbs} value={selectedKBId} onChange={setPickedKB} />}
+          <div>
+            <label htmlFor="trace-q" className="label">Query</label>
             <div className="relative">
-              <input
-                type="text"
-                required
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Type your search query..."
-                className="w-full pl-11 pr-4 py-3 bg-background border border-card-border rounded-2xl text-foreground placeholder-text-muted focus:outline-none focus:border-primary text-sm"
-              />
-              <span className="absolute inset-y-0 left-0 pl-4 flex items-center text-text-muted">
-                <Search className="w-4 h-4" />
-              </span>
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <input id="trace-q" required value={query} onChange={(e) => setQuery(e.target.value)} placeholder="What does the policy say about refunds?" className="input pl-9" />
             </div>
           </div>
-
-          <div className="md:col-span-1">
-            <button
-              type="submit"
-              disabled={loading || !selectedKBId || !query.trim()}
-              className="w-full py-3 bg-primary hover:bg-primary-hover text-background rounded-2xl font-semibold text-sm transition-all duration-200 cursor-pointer disabled:opacity-50 flex justify-center items-center gap-2"
-            >
-              {loading ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>Searching...</span>
-                </>
-              ) : (
-                <>
-                  <SearchCode className="w-4 h-4" />
-                  <span>Execute Trace</span>
-                </>
-              )}
-            </button>
-          </div>
+          <button className="btn btn-primary" disabled={loading || !selectedKBId || !query.trim()}>
+            {loading ? <Spinner /> : <SearchCode className="h-4 w-4" />}Run trace
+          </button>
         </form>
-      </div>
+      </Card>
 
-      {error && (
-        <div className="flex items-start space-x-2 p-4 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
-          <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
-          <span>{error}</span>
-        </div>
-      )}
+      {error && <Alert tone="danger">{error}</Alert>}
 
-      {/* Latency Stats Banner */}
       {latencies && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 bg-card/20 border border-card-border p-6 rounded-3xl">
-          <div className="flex items-center space-x-3">
-            <Clock className="w-5 h-5 text-violet-400" />
-            <div>
-              <span className="text-[10px] uppercase font-bold text-text-muted block">Retrieval Latency</span>
-              <span className="text-lg font-bold text-foreground mt-0.5">{latencies.retrieval_ms} ms</span>
-            </div>
-          </div>
-          <div className="flex items-center space-x-3">
-            <TrendingDown className="w-5 h-5 text-cyan-400" />
-            <div>
-              <span className="text-[10px] uppercase font-bold text-text-muted block">BGE Reranking</span>
-              <span className="text-lg font-bold text-foreground mt-0.5">{latencies.rerank_ms} ms</span>
-            </div>
-          </div>
-          <div className="flex items-center space-x-3">
-            <Cpu className="w-5 h-5 text-primary" />
-            <div>
-              <span className="text-[10px] uppercase font-bold text-text-muted block">Total RAG Pipeline</span>
-              <span className="text-lg font-bold text-foreground mt-0.5">{latencies.total_ms} ms</span>
-            </div>
-          </div>
+        <div className="grid gap-4 sm:grid-cols-3">
+          <StatCard label="Hybrid retrieval" value={`${latencies.retrieval_ms} ms`} icon={Clock} />
+          <StatCard label="Reranking" value={`${latencies.rerank_ms} ms`} icon={TrendingDown} />
+          <StatCard label="Total" value={`${latencies.total_ms} ms`} icon={Cpu} />
         </div>
       )}
 
-      {preRerank.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* List 1: Pre Reranking */}
-          <div className="glass border border-card-border rounded-3xl p-6 space-y-4">
-            <div className="pb-3 border-b border-card-border/50">
-              <h3 className="text-base font-bold text-foreground">Hybrid Retrieval (Dense + Sparse)</h3>
-              <p className="text-xs text-text-muted mt-0.5">Top 10 retrieved chunks before reranking</p>
-            </div>
-
-            <div className="space-y-4">
-              {preRerank.map((chunk, idx) => (
-                <div key={idx} className="p-4 bg-background/50 border border-card-border/50 rounded-2xl space-y-2">
-                  <div className="flex justify-between items-center text-xs">
-                    <span className="bg-card px-2.5 py-1 rounded-lg border border-card-border text-text-muted font-bold font-mono">
-                      Rank #{idx + 1}
-                    </span>
-                    <span className="text-primary font-semibold font-mono">
-                      Score: {chunk.score ? chunk.score.toFixed(4) : chunk.rrf_score?.toFixed(4)}
-                    </span>
+      {preRerank === null ? (
+        <Card>
+          <EmptyState icon={SearchCode} title="Run a query to see the trace" description="Results from both stages appear side by side." />
+        </Card>
+      ) : preRerank.length === 0 ? (
+        <Card><EmptyState icon={Search} title="Nothing matched" description="No chunk in this knowledge base matched the query." /></Card>
+      ) : (
+        <div className="grid gap-6 lg:grid-cols-2">
+          <Card className="overflow-hidden">
+            <CardHeader title="1 · Hybrid retrieval" description="Dense vectors + keyword search, fused (top 10)" />
+            <ol className="divide-y divide-border">
+              {preRerank.map((c, i) => (
+                <li key={i} className="px-5 py-3.5">
+                  <div className="mb-1.5 flex items-center justify-between text-xs">
+                    <span className="badge badge-neutral">#{i + 1}</span>
+                    <span className="font-mono text-muted-foreground">{(c.score ?? c.rrf_score ?? 0).toFixed(4)}</span>
                   </div>
-                  <p className="text-xs text-foreground line-clamp-2 leading-relaxed bg-card/10 p-2 rounded-xl italic">
-                    &ldquo;{chunk.content}&rdquo;
+                  <p className="line-clamp-2 text-sm text-foreground">{c.content}</p>
+                  <p className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <FileText className="h-3 w-3" /><span className="truncate">{c.filename}</span>{c.page_number != null && <span>· p.{c.page_number}</span>}
                   </p>
-                  <div className="flex items-center space-x-2 text-[10px] text-text-muted">
-                    <FileText className="w-3 h-3" />
-                    <span className="truncate max-w-[150px]">{chunk.filename}</span>
-                    <span className="font-bold">Page {chunk.page_number}</span>
-                  </div>
-                </div>
+                </li>
               ))}
-            </div>
-          </div>
+            </ol>
+          </Card>
 
-          {/* List 2: Post Reranking */}
-          <div className="glass border border-card-border rounded-3xl p-6 space-y-4">
-            <div className="pb-3 border-b border-card-border/50">
-              <h3 className="text-base font-bold text-foreground">BGE Reranking Filtration</h3>
-              <p className="text-xs text-text-muted mt-0.5">Top 5 reranked chunks pushed to LLM Context Window</p>
-            </div>
-
-            <div className="space-y-4">
-              {postRerank.map((chunk, idx) => (
-                <div key={idx} className="p-4 bg-primary/5 border border-primary/20 rounded-2xl space-y-3">
-                  <div className="flex justify-between items-center text-xs">
-                    <div className="flex items-center space-x-2">
-                      <span className="bg-primary/20 px-2.5 py-1 rounded-lg border border-primary/30 text-primary font-bold font-mono">
-                        Rank #{idx + 1}
-                      </span>
-                      {/* Show rank boost comparison if it was lower in pre-rerank */}
-                      <span className="text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full font-bold">
-                        BGE Boosted
-                      </span>
+          <Card className="overflow-hidden">
+            <CardHeader title="2 · Reranked context" description="What the model actually reads" />
+            <ol className="divide-y divide-border">
+              {postRerank.map((c, i) => {
+                const before = rankBefore(c);
+                return (
+                  <li key={i} className="px-5 py-3.5">
+                    <div className="mb-1.5 flex items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-1.5">
+                        <span className="badge badge-accent">#{i + 1}</span>
+                        {before !== null && before !== i + 1 && (
+                          <span className={before > i + 1 ? "badge badge-success" : "badge badge-neutral"}>
+                            {before > i + 1 && <ArrowUpRight className="h-3 w-3" />}was #{before}
+                          </span>
+                        )}
+                      </div>
+                      <span className="font-mono text-muted-foreground">{((c.similarity_score ?? 0) * 100).toFixed(1)}%</span>
                     </div>
-                    <span className="text-emerald-400 font-bold font-mono flex items-center gap-1">
-                      <Sparkles className="w-3.5 h-3.5" />
-                      <span>Similarity: {(chunk.similarity_score * 100).toFixed(0)}%</span>
-                    </span>
-                  </div>
-                  <p className="text-xs text-foreground leading-relaxed bg-card/25 p-3 rounded-xl border border-card-border/50">
-                    {chunk.content}
-                  </p>
-                  <div className="flex justify-between items-center text-[10px] text-text-muted">
-                    <div className="flex items-center space-x-2">
-                      <FileText className="w-3 h-3" />
-                      <span className="truncate max-w-[150px]">{chunk.filename}</span>
-                      <span className="font-bold">Page {chunk.page_number}</span>
-                    </div>
-                    <span className="font-mono text-card-border/80">Rerank Score: {chunk.rerank_score?.toFixed(2)}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+                    <p className="text-sm leading-relaxed text-foreground">{c.content}</p>
+                    <p className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <FileText className="h-3 w-3" /><span className="truncate">{c.filename}</span>{c.page_number != null && <span>· p.{c.page_number}</span>}
+                    </p>
+                  </li>
+                );
+              })}
+            </ol>
+          </Card>
         </div>
       )}
     </div>

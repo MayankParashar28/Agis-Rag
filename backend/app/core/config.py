@@ -125,6 +125,15 @@ class Settings(BaseSettings):
     # empties itself instead of accumulating celery-task-meta-* keys.
     CELERY_RESULT_EXPIRES_SECONDS: int = 3600
 
+    # --- Semantic answer cache (Redis) ---------------------------------------
+    ANSWER_CACHE_ENABLED: bool = True
+    # Cosine similarity a new question needs to reuse a cached answer. High on
+    # purpose: near-paraphrases only, never merely related questions.
+    ANSWER_CACHE_SIMILARITY: float = 0.95
+    ANSWER_CACHE_MIN_CONFIDENCE: float = 60.0
+    ANSWER_CACHE_TTL_SECONDS: int = 86400
+    ANSWER_CACHE_MAX_ENTRIES: int = 50
+
     # --- Rate limiting ------------------------------------------------------
     RATE_LIMIT: str = "100/minute"
 

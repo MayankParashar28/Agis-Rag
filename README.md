@@ -93,7 +93,7 @@ docker-compose up --build -d
 ```
 
 This will build the frontend and backend, provision databases, and start all services:
-- **Next.js 15 Frontend**: `http://localhost:3000`
+- **Next.js 16 Frontend**: `http://localhost:3000`
 - **FastAPI Backend Swagger Docs**: `http://localhost:8000/docs`
 - **Qdrant Vector Console**: `http://localhost:6333/dashboard`
 
@@ -110,6 +110,26 @@ This will build the frontend and backend, provision databases, and start all ser
 - Access the **RAGAS Evaluation** tab to compute Faithfulness, Recall, and Precision statistics.
 
 ---
+
+## ✨ Features
+
+- **Live indexing progress**: the worker reports each stage (queued → reading → chunking → embedding → saving) to Redis, and the Documents page shows a live progress bar per file. Progress keys expire on their own once a document finishes.
+- **Redis hand-off to the worker**: uploads are staged in Redis and the Celery worker takes them with an atomic read-and-delete, so Redis empties itself after every hand-off.
+- **Clickable citations**: every `[Source N]` in an answer is a button. It opens the exact cited passage, highlighted with the text around it, and can open the original file at that page.
+- **Import from a URL**: index a web page or a linked PDF/DOCX/CSV/TXT file. Private network addresses are blocked.
+- **Duplicate detection**: uploading the same file twice to a knowledge base is refused (SHA-256 match).
+- **Semantic answer cache**: a near-identical first question reuses a confident earlier answer instantly. Cached answers are invalidated whenever the knowledge base changes.
+- **Prompt-injection guard**: retrieved text is wrapped as untrusted data, and instruction-like phrases ("ignore previous instructions…") are removed before they reach the model.
+
+## ✅ Tests and CI
+
+```bash
+cd backend
+pip install -r requirements-test.txt
+python -m pytest -q
+```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the backend tests plus the frontend lint and production build on every push and pull request.
 
 ## 🛠️ Diagnostics & Telemetry (Observability)
 

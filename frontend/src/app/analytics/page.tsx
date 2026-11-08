@@ -1,178 +1,73 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { BarChart3, Clock, Sparkles, Activity, AlertTriangle, ShieldCheck } from "lucide-react";
-import { api, authStorage, ObservabilityLog } from "@/lib/api";
+import { Activity } from "lucide-react";
+import { api, ObservabilityLog } from "@/lib/api";
+import { useApi, useRequireAuth } from "@/lib/hooks";
 import { SVGLineChart } from "@/components/analytics-charts";
+import { Alert, Card, CardHeader, EmptyState, PageHeader, Skeleton, cx } from "@/components/ui";
 
 export default function AnalyticsPage() {
-  const router = useRouter();
-  const [logs, setLogs] = useState<ObservabilityLog[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const allowed = useRequireAuth({ adminOnly: true });
+  const { data, error, loading } = useApi<ObservabilityLog[]>(allowed ? "/analytics/observability" : null, api.getObservabilityLogs);
+  const logs = data ?? [];
 
-  useEffect(() => {
-    const token = authStorage.getToken();
-    const user = authStorage.getUser();
-    if (!token) {
-      router.push("/login");
-      return;
-    }
+  if (!allowed) return null;
 
-    if (!user || user.role !== "admin") {
-      router.push("/knowledge-bases");
-      return;
-    }
-
-    const fetchLogs = async () => {
-      try {
-        const res = await api.getObservabilityLogs();
-        setLogs(res);
-      } catch (err: any) {
-        setError(err.message || "Failed to load observability logs.");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchLogs();
-  }, [router]);
-
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[50vh] text-foreground">
-        <div className="text-center space-y-2">
-          <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-sm text-text-muted">Loading analytics...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // Format data for SVGLineCharts
-  const latencyData = logs.map((log) => ({
-    label: log.timestamp.split(" ")[1] || log.timestamp,
-    value: log.query_latency
-  }));
-
-  const retrievalData = logs.map((log) => ({
-    label: log.timestamp.split(" ")[1] || log.timestamp,
-    value: log.retrieval_latency
-  }));
-
-  const hallucinationData = logs.map((log) => ({
-    label: log.timestamp.split(" ")[1] || log.timestamp,
-    value: log.hallucination_rate * 100
-  }));
-
-  const scoreData = logs.map((log) => ({
-    label: log.timestamp.split(" ")[1] || log.timestamp,
-    value: log.retrieval_score * 100
-  }));
+  const label = (log: ObservabilityLog) => log.timestamp.split(" ")[1] || log.timestamp;
+  const series = (fn: (l: ObservabilityLog) => number) => logs.map((l) => ({ label: label(l), value: fn(l) }));
 
   return (
-    <div className="space-y-8 animate-fade-in">
-      <div>
-        <h1 className="text-3xl font-extrabold text-foreground tracking-tight">Analytics & Observability</h1>
-        <p className="text-text-muted mt-1">Real-time telemetry, model latencies, and hallucination rates</p>
-      </div>
+    <div className="space-y-6 animate-fade-in">
+      <PageHeader eyebrow="Admin" title="Analytics" description="Per-query latency, retrieval quality and hallucination rate." />
+      {error && <Alert tone="danger">{error}</Alert>}
 
-      {error && (
-        <div className="flex items-start space-x-2 p-4 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
-          <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
-          <span>{error}</span>
-        </div>
-      )}
-
-      {logs.length === 0 ? (
-        <div className="glass p-12 rounded-3xl border border-card-border text-center flex flex-col items-center justify-center space-y-4 max-w-2xl mx-auto">
-          <div className="bg-primary/10 p-4 rounded-2xl border border-primary/20 text-primary">
-            <Activity className="w-8 h-8" />
-          </div>
-          <h3 className="text-xl font-bold text-foreground">No Telemetry Logs Yet</h3>
-          <p className="text-sm text-text-muted leading-relaxed">
-            There are no query execution logs recorded. Once you send messages and run RAG queries in the **Chat Console**, real-time performance telemetry, Qdrant/BM25 retrieval metrics, and faithfulness scores will automatically populate here.
-          </p>
-        </div>
+      {loading ? (
+        <div className="grid gap-4 lg:grid-cols-2">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-72" />)}</div>
+      ) : logs.length === 0 ? (
+        <Card>
+          <EmptyState icon={Activity} title="No queries logged yet" description="Ask questions in Chat and the telemetry for each answer appears here." />
+        </Card>
       ) : (
         <>
-          {/* Grid of charts */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <SVGLineChart
-              title="Overall Query Latency"
-              data={latencyData}
-              color="#6366f1"
-              gradientId="latency-grad"
-              unit="ms"
-            />
-            <SVGLineChart
-              title="Qdrant Index Retrieval Latency"
-              data={retrievalData}
-              color="#06b6d4"
-              gradientId="retrieval-grad"
-              unit="ms"
-            />
-            <SVGLineChart
-              title="Hallucination Rate"
-              data={hallucinationData}
-              color="#f43f5e"
-              gradientId="hallucination-grad"
-              unit="%"
-            />
-            <SVGLineChart
-              title="Average Vector Retrieval Score"
-              data={scoreData}
-              color="#10b981"
-              gradientId="score-grad"
-              unit="%"
-            />
+          <div className="grid gap-4 lg:grid-cols-2">
+            <SVGLineChart title="Query latency" description="End-to-end time per answer" data={series((l) => l.query_latency)} color="#1a1a1a" gradientId="lat" unit="ms" />
+            <SVGLineChart title="Retrieval latency" description="Vector + keyword search" data={series((l) => l.retrieval_latency)} color="#2c5d8a" gradientId="ret" unit="ms" />
+            <SVGLineChart title="Hallucination rate" description="Lower is better" data={series((l) => l.hallucination_rate * 100)} color="#b42318" gradientId="hal" unit="%" />
+            <SVGLineChart title="Retrieval score" description="Average rerank score of used chunks" data={series((l) => l.retrieval_score * 100)} color="#1f7a4d" gradientId="score" unit="%" />
           </div>
 
-          {/* Audit Logs table */}
-          <div className="glass border border-card-border rounded-3xl p-6 overflow-hidden">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-bold text-foreground">Audit Execution Logs</h3>
-              <span className="flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-card border border-card-border text-text-muted">
-                <ShieldCheck className="w-3.5 h-3.5" />
-                <span>{logs.length} logged {logs.length === 1 ? "query" : "queries"}</span>
-              </span>
-            </div>
-
+          <Card className="overflow-hidden">
+            <CardHeader title="Recent queries" description={`Latest ${Math.min(logs.length, 15)} of ${logs.length}`} />
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
+              <table className="table">
                 <thead>
-                  <tr className="border-b border-card-border/50 text-text-muted font-semibold">
-                    <th className="py-3 pr-4">Timestamp</th>
-                    <th className="py-3 px-4">Query Latency</th>
-                    <th className="py-3 px-4">Vector Retrieval</th>
-                    <th className="py-3 px-4">Hallucination</th>
-                    <th className="py-3 pl-4 text-right">Cosine Score</th>
+                  <tr>
+                    <th>Time</th>
+                    <th className="text-right">Latency</th>
+                    <th className="text-right">Retrieval</th>
+                    <th className="text-right">Hallucination</th>
+                    <th className="text-right">Score</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {logs.slice(-10).reverse().map((log, idx) => (
-                    <tr key={idx} className="border-b border-card-border/30 text-foreground hover:bg-card-border/10 transition-colors">
-                      <td className="py-4 pr-4 font-mono text-xs">{log.timestamp}</td>
-                      <td className="py-4 px-4 font-semibold text-violet-400">{log.query_latency.toFixed(0)} ms</td>
-                      <td className="py-4 px-4 text-cyan-400 font-medium">{log.retrieval_latency.toFixed(0)} ms</td>
-                      <td className="py-4 px-4">
-                        <span className={`inline-flex items-center text-xs font-semibold py-0.5 px-2 rounded-full border ${
-                          (log.hallucination_rate * 100) > 20
-                            ? "text-red-400 bg-red-500/10 border-red-500/20"
-                            : "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                        }`}>
-                          {(log.hallucination_rate * 100).toFixed(1)}%
-                        </span>
-                      </td>
-                      <td className="py-4 pl-4 text-right text-emerald-400 font-bold font-mono">{(log.retrieval_score * 100).toFixed(2)}%</td>
-                    </tr>
-                  ))}
+                  {logs.slice(-15).reverse().map((log, idx) => {
+                    const hall = log.hallucination_rate * 100;
+                    return (
+                      <tr key={idx}>
+                        <td className="font-mono text-xs text-muted-foreground">{log.timestamp}</td>
+                        <td className="text-right tabular-nums">{log.query_latency.toFixed(0)} ms</td>
+                        <td className="text-right tabular-nums">{log.retrieval_latency.toFixed(0)} ms</td>
+                        <td className="text-right">
+                          <span className={cx("badge", hall > 20 ? "badge-danger" : "badge-success")}>{hall.toFixed(1)}%</span>
+                        </td>
+                        <td className="text-right tabular-nums">{(log.retrieval_score * 100).toFixed(1)}%</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
-          </div>
+          </Card>
         </>
       )}
     </div>

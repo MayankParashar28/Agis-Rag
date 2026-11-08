@@ -1,8 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   Database,
@@ -14,136 +13,141 @@ import {
   Settings,
   LogOut,
   Users,
-  Files
+  Files,
+  X,
 } from "lucide-react";
-import { api, authStorage, User as UserType } from "@/lib/api";
-import { authClient } from "@/lib/auth";
+import { api } from "@/lib/api";
+import { prefetchRouteData, useCurrentUser } from "@/lib/hooks";
+import { cx } from "@/components/ui";
 
-const menuItems = [
-  { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard, adminOnly: true },
-  { name: "Knowledge Bases", href: "/knowledge-bases", icon: Database, adminOnly: false },
-  { name: "Upload Documents", href: "/upload", icon: UploadCloud, adminOnly: false },
-  { name: "Chat Engine", href: "/chat", icon: MessageSquare, adminOnly: false },
-  { name: "Retrieval Viewer", href: "/retrieval", icon: SearchCode, adminOnly: false },
-  { name: "Analytics Dashboard", href: "/analytics", icon: BarChart3, adminOnly: true },
-  { name: "User Management", href: "/users", icon: Users, adminOnly: true },
-  { name: "Doc Management", href: "/admin/documents", icon: Files, adminOnly: true },
-  { name: "Evaluation", href: "/evaluation", icon: TrendingUp, adminOnly: false },
-  { name: "Settings", href: "/settings", icon: Settings, adminOnly: false },
+const sections = [
+  {
+    title: "Workspace",
+    items: [
+      { name: "Chat", href: "/chat", icon: MessageSquare },
+      { name: "Knowledge Bases", href: "/knowledge-bases", icon: Database },
+      { name: "Documents", href: "/upload", icon: UploadCloud },
+      { name: "Retrieval Viewer", href: "/retrieval", icon: SearchCode },
+      { name: "Evaluation", href: "/evaluation", icon: TrendingUp },
+    ],
+  },
+  {
+    title: "Admin",
+    adminOnly: true,
+    items: [
+      { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+      { name: "Analytics", href: "/analytics", icon: BarChart3 },
+      { name: "Users", href: "/users", icon: Users },
+      { name: "All Documents", href: "/admin/documents", icon: Files },
+    ],
+  },
 ];
 
-export default function Sidebar({ mobileMenuOpen, setMobileMenuOpen }: { mobileMenuOpen?: boolean, setMobileMenuOpen?: (v: boolean) => void }) {
+export default function Sidebar({
+  mobileMenuOpen,
+  setMobileMenuOpen,
+}: {
+  mobileMenuOpen?: boolean;
+  setMobileMenuOpen?: (v: boolean) => void;
+}) {
   const pathname = usePathname();
-  const router = useRouter();
-  const [currentUser, setCurrentUser] = useState<UserType | null>(null);
-
-  useEffect(() => {
-    setCurrentUser(authStorage.getUser());
-  }, [pathname]);
+  const currentUser = useCurrentUser();
+  const close = () => setMobileMenuOpen?.(false);
 
   const handleLogout = async () => {
     try {
+      // Loaded only when signing out: the auth client is large and is not
+      // needed to render any page.
+      const { authClient } = await import("@/lib/auth");
       await authClient.signOut();
     } catch (err) {
       console.warn("Neon auth signOut skipped or unavailable:", err);
     }
     api.logout();
-    setCurrentUser(null);
-    if (typeof window !== "undefined") {
-      window.location.href = "/login";
-    } else {
-      router.push("/login");
-    }
+    window.location.href = "/login";
+  };
+
+  const initials =
+    (currentUser?.full_name || currentUser?.email || "U")
+      .split(/\s+/)
+      .map((p) => p[0])
+      .join("")
+      .slice(0, 2)
+      .toUpperCase() || "U";
+
+  const navLink = (item: { name: string; href: string; icon: React.ComponentType<{ className?: string }> }) => {
+    const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href + "/"));
+    const Icon = item.icon;
+    return (
+      <Link
+        key={item.href}
+        href={item.href}
+        onClick={close}
+        onMouseEnter={() => prefetchRouteData(item.href)}
+        onFocus={() => prefetchRouteData(item.href)}
+        aria-current={active ? "page" : undefined}
+        className={cx(
+          "group flex h-9 items-center gap-3 rounded-lg px-3 text-sm transition-colors",
+          active ? "bg-surface-muted font-semibold text-foreground" : "text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
+        )}
+      >
+        <Icon className={cx("h-4 w-4 shrink-0", active ? "text-accent" : "text-muted-foreground group-hover:text-foreground")} />
+        <span className="truncate">{item.name}</span>
+      </Link>
+    );
   };
 
   return (
     <>
-      {/* Mobile Overlay */}
-      {mobileMenuOpen && (
-        <div 
-          className="fixed inset-0 bg-foreground/20 backdrop-blur-md z-[80] md:hidden"
-          onClick={() => setMobileMenuOpen && setMobileMenuOpen(false)}
-        />
-      )}
-      
-      <aside className={`w-72 bg-card border-r border-card-border/10 flex flex-col justify-between h-screen fixed md:sticky top-0 z-[90] transition-transform duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] md:translate-x-0 ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <div>
-        {/* Logo */}
-        <div className="p-8 border-b border-card-border/10 flex flex-col space-y-4 relative overflow-hidden">
-          <div className="w-8 h-px bg-foreground z-10" />
-          <div className="relative z-10">
-            <span className="font-serif text-2xl text-foreground block leading-[0.9] tracking-tight">
+      {mobileMenuOpen && <div className="fixed inset-0 z-[80] bg-[#1a1a1a]/30 md:hidden" onClick={close} />}
+
+      <aside
+        className={cx(
+          "fixed inset-y-0 left-0 z-[90] flex w-64 flex-col border-r border-border bg-surface transition-transform duration-300 ease-out md:sticky md:top-0 md:h-screen md:translate-x-0",
+          mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
+        )}
+        aria-label="Main navigation"
+      >
+        <div className="flex h-16 items-center justify-between px-5">
+          <Link href="/chat" onClick={close} className="flex items-baseline gap-1.5">
+            <span className="font-serif text-xl tracking-tight text-foreground">
               Agis <span className="italic text-accent">RAG</span>
             </span>
-            <span className="text-[10px] tracking-[0.2em] uppercase text-muted-foreground mt-2 block">Enterprise Platform</span>
-          </div>
-          {/* Logo Watermark behind branding */}
-          <div className="absolute left-8 top-1/2 -translate-y-1/2 w-32 h-32 opacity-[0.05] pointer-events-none select-none z-0">
-            <img 
-              src="/logo.png" 
-              alt="AGIS Logo Watermark" 
-              className="w-full h-full object-contain" 
-            />
-          </div>
-        </div>
-
-        {/* Navigation Menu */}
-        <nav className="p-6 space-y-1">
-          <div className="text-[10px] tracking-[0.2em] uppercase text-muted-foreground mb-6">Menu</div>
-          {menuItems
-            .filter((item) => !item.adminOnly || currentUser?.role === "admin")
-            .map((item) => {
-              const isActive = pathname === item.href;
-              const Icon = item.icon;
-              return (
-                <Link
-                  key={item.name}
-                  href={item.href}
-                  onClick={() => setMobileMenuOpen && setMobileMenuOpen(false)}
-                  className={`group flex items-center justify-between px-0 py-3 transition-all duration-500 border-b ${
-                    isActive
-                      ? "border-accent text-foreground"
-                      : "border-transparent text-muted-foreground hover:border-foreground/30 hover:text-foreground"
-                  }`}
-                >
-                  <div className="flex items-center space-x-4">
-                    <Icon className={`w-4 h-4 transition-colors duration-500 ${isActive ? "text-accent" : "text-muted-foreground group-hover:text-foreground"}`} strokeWidth={1.5} />
-                    <span className="text-sm font-sans tracking-wide">{item.name}</span>
-                  </div>
-                  {isActive && <div className="w-1.5 h-1.5 rounded-full bg-accent" />}
-                </Link>
-              );
-            })}
-        </nav>
-
-      </div>
-
-      {/* User profile & Logout */}
-      {currentUser && (
-        <div className="p-6 border-t border-card-border/10 bg-muted-background/30">
-          <div className="flex items-center space-x-4 mb-6">
-            <div className="w-10 h-10 border border-foreground/20 flex items-center justify-center bg-background">
-              <span className="font-serif text-foreground">{currentUser.full_name?.charAt(0) || "U"}</span>
-            </div>
-            <div className="truncate flex-1">
-              <span className="text-[10px] tracking-[0.2em] uppercase text-muted-foreground block mb-0.5">
-                Welcome back,
-              </span>
-              <span className="text-sm font-serif italic text-accent block truncate">
-                {currentUser.full_name?.split(' ')[0] || "User"}
-              </span>
-            </div>
-          </div>
-          <button
-            onClick={handleLogout}
-            className="w-full flex items-center justify-center space-x-2 py-3 border border-foreground/20 text-foreground hover:bg-foreground hover:text-background transition-all duration-500 text-[10px] uppercase tracking-[0.2em]"
-          >
-            <LogOut className="w-3 h-3" strokeWidth={1.5} />
-            <span>Sign Out</span>
+          </Link>
+          <button onClick={close} className="icon-btn md:hidden" aria-label="Close menu">
+            <X className="h-4 w-4" />
           </button>
         </div>
-      )}
-    </aside>
+
+        <nav className="flex-1 space-y-6 overflow-y-auto px-3 pb-4 pt-2">
+          {sections
+            .filter((s) => !s.adminOnly || currentUser?.role === "admin")
+            .map((section) => (
+              <div key={section.title}>
+                <p className="eyebrow mb-2 px-3 text-[10px]">{section.title}</p>
+                <div className="space-y-0.5">{section.items.map(navLink)}</div>
+              </div>
+            ))}
+        </nav>
+
+        <div className="border-t border-border p-3">
+          {navLink({ name: "Settings", href: "/settings", icon: Settings })}
+          {currentUser && (
+            <div className="mt-2 flex items-center gap-3 rounded-lg px-3 py-2">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-soft text-xs font-semibold text-accent-hover">
+                {initials}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-foreground">{currentUser.full_name || "Account"}</p>
+                <p className="truncate text-xs text-muted-foreground">{currentUser.email}</p>
+              </div>
+              <button onClick={handleLogout} className="icon-btn" title="Sign out" aria-label="Sign out">
+                <LogOut className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+        </div>
+      </aside>
     </>
   );
 }

@@ -8,35 +8,31 @@ import { Menu } from "lucide-react";
 export default function LayoutWrapper({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  
-  // Do not show sidebar on landing, login, or registration pages
-  const isAuthPage = pathname === "/login" || pathname === "/register" || pathname === "/";
 
+  // No app chrome on the landing, login and registration pages.
+  const isAuthPage = pathname === "/login" || pathname === "/register" || pathname === "/";
   if (isAuthPage) {
-    return <div className="min-h-screen flex flex-col bg-background relative z-10">{children}</div>;
+    return <div className="min-h-screen bg-background">{children}</div>;
   }
 
+  const isChat = pathname === "/chat";
+
   return (
-    <div className="flex flex-col md:flex-row min-h-screen md:h-screen bg-transparent overflow-hidden relative z-10">
-      {/* Mobile Top Nav */}
-      <div className="md:hidden flex items-center justify-between p-6 border-b border-card-border/10 bg-card shrink-0 relative z-10">
-        <div className="flex flex-col space-y-1">
-          <span className="font-serif text-xl text-foreground block leading-[0.9] tracking-tight">
-            Agis <span className="italic text-accent">RAG</span>
-          </span>
-        </div>
-        <button 
-          onClick={() => setMobileMenuOpen(true)}
-          className="text-foreground hover:text-accent transition-colors duration-500"
-        >
-          <Menu className="w-6 h-6" strokeWidth={1.5} />
+    <div className="flex min-h-screen flex-col bg-background md:h-screen md:flex-row md:overflow-hidden">
+      {/* Mobile top bar */}
+      <div className="sticky top-0 z-40 flex h-14 shrink-0 items-center justify-between border-b border-border bg-surface/95 px-4 backdrop-blur md:hidden">
+        <span className="font-serif text-lg tracking-tight text-foreground">
+          Agis <span className="italic text-accent">RAG</span>
+        </span>
+        <button onClick={() => setMobileMenuOpen(true)} className="icon-btn" aria-label="Open menu">
+          <Menu className="h-5 w-5" />
         </button>
       </div>
 
       <Sidebar mobileMenuOpen={mobileMenuOpen} setMobileMenuOpen={setMobileMenuOpen} />
-      
-      <main className="flex-1 overflow-y-auto p-4 md:p-12 relative z-10">
-        {children}
+
+      <main className={isChat ? "min-w-0 flex-1 overflow-hidden p-3 md:p-5" : "min-w-0 flex-1 overflow-y-auto"}>
+        {isChat ? children : <div className="mx-auto w-full max-w-7xl px-4 py-6 md:px-8 md:py-10">{children}</div>}
       </main>
     </div>
   );
