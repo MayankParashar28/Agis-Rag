@@ -169,14 +169,28 @@ export function StatusBadge({ status }: { status: string }) {
 
 /** Live indexing progress bar for one document. */
 export function IndexingBar({ progress, compact }: { progress?: IndexingProgress; compact?: boolean }) {
-  const pct = progress?.percent ?? 2;
-  const failed = progress?.stage === "failed";
-  const done = progress?.stage === "done";
+  // No live record (older backend, or Redis unreachable): show that work is
+  // happening without inventing a percentage.
+  if (!progress) {
+    return (
+      <div className={cx("w-full", compact ? "min-w-[140px]" : "")}>
+        <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-foreground">
+          <Spinner className="h-3 w-3 text-accent" /> Indexing…
+        </div>
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-muted" role="progressbar" aria-label="Indexing in progress">
+          <div className="h-full w-1/3 rounded-full bg-accent progress-indeterminate" />
+        </div>
+      </div>
+    );
+  }
+  const pct = progress.percent ?? 2;
+  const failed = progress.stage === "failed";
+  const done = progress.stage === "done";
   return (
     <div className={cx("w-full", compact ? "min-w-[140px]" : "")}>
       <div className="mb-1 flex items-center justify-between gap-2 text-[11px]">
         <span className={cx("truncate font-medium", failed ? "text-danger" : "text-foreground")}>
-          {progress?.label ?? "Waiting for a worker"}
+          {progress.label}
         </span>
         <span className="tabular-nums text-muted-foreground">{Math.round(pct)}%</span>
       </div>
@@ -196,7 +210,7 @@ export function IndexingBar({ progress, compact }: { progress?: IndexingProgress
           style={{ width: `${Math.max(3, pct)}%` }}
         />
       </div>
-      {!compact && progress?.message && (
+      {!compact && progress.message && (
         <p className={cx("mt-1 truncate text-[11px]", failed ? "text-danger" : "text-muted-foreground")} title={progress.message}>
           {progress.message}
         </p>
@@ -222,17 +236,26 @@ export function Modal({
   size?: "md" | "lg" | "xl";
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
+  // Keep the latest onClose without re-running the effect: callers pass an
+  // inline arrow, and re-running on every render used to pull focus out of
+  // whatever input the user was typing in.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
   useEffect(() => {
     if (!open) return;
     const previous = document.activeElement as HTMLElement | null;
-    panelRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    // Focus the first field if there is one, otherwise the dialog itself.
+    const first = panelRef.current?.querySelector<HTMLElement>("input, textarea, select");
+    (first ?? panelRef.current)?.focus();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onCloseRef.current();
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
       previous?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   const width = size === "xl" ? "max-w-5xl" : size === "lg" ? "max-w-3xl" : "max-w-md";

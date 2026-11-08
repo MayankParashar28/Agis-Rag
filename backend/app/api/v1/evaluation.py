@@ -11,6 +11,7 @@ from app.models.knowledge import KnowledgeBase
 from app.models.metrics import Evaluation
 from app.schemas.metrics import RagasEvaluationBase, RagasEvaluationResponse
 from app.services.evaluator import ragas_evaluator
+from app.core.logging import logger
 
 router = APIRouter()
 
@@ -35,7 +36,17 @@ async def trigger_ragas_evaluation(
         )
         
     # 2. Run evaluation (awaits computation, returns results)
-    eval_results = await ragas_evaluator.run_evaluation(db, eval_in.kb_id)
+    try:
+        eval_results = await ragas_evaluator.run_evaluation(db, eval_in.kb_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Say what failed instead of the generic 500 text.
+        logger.error(f"Evaluation failed for KB {eval_in.kb_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail=f"The evaluation could not finish ({type(e).__name__}: {str(e)[:200]}). Check the backend logs.",
+        )
     
     # 3. Retrieve database record that was saved
     eval_id = uuid.UUID(eval_results["id"])

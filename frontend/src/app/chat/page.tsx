@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 import CitationViewer from "@/components/chat/CitationViewer";
+import { DocumentPicker, KBPicker } from "@/components/chat/SourcePicker";
 import { api, authStorage, Citation, KnowledgeBase, Conversation, Message, UserNote, DocumentInfo } from "@/lib/api";
 
 function ChatPageContent() {
@@ -585,82 +586,6 @@ function ChatPageContent() {
           </div>
         </div>
 
-        {/* KB Selection in Chat */}
-        <div className="border-t border-card-border pt-4 mt-2">
-          <label className="block text-[10px] font-bold text-text-muted uppercase tracking-wider mb-2 flex items-center gap-1.5">
-            <Database className="w-3.5 h-3.5 text-primary" />
-            <span>Target Index</span>
-          </label>
-          <select
-            value={selectedKBId}
-            onChange={(e) => {
-              setSelectedKBId(e.target.value);
-              handleCreateConversation(e.target.value);
-              if (isMobile) setShowMobileSidebar(false);
-            }}
-            className="w-full bg-background border border-card-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none"
-          >
-            {kbs.map((kb) => (
-              <option key={kb.id} value={kb.id}>
-                {kb.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* KB Documents Checklist (NotebookLM style sources) */}
-        {selectedKBId && (
-          <div className="border-t border-card-border pt-4 mt-4 flex-1 min-h-0 flex flex-col">
-            <label className="block text-[10px] font-bold text-text-muted uppercase tracking-wider mb-2 flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <FileText className="w-3.5 h-3.5 text-secondary" />
-                <span>Sources ({selectedDocIds.length}/{kbDocs.length})</span>
-              </span>
-              {selectedDocIds.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setSelectedDocIds([])}
-                  className="text-[9px] text-primary hover:underline font-bold cursor-pointer"
-                >
-                  Clear
-                </button>
-              )}
-            </label>
-            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-              {kbDocs.length === 0 ? (
-                <span className="text-[10px] text-text-muted italic block py-2">No documents indexed. Go to Uploads.</span>
-              ) : (
-                kbDocs.map((doc) => {
-                  const isChecked = selectedDocIds.includes(doc.id);
-                  return (
-                    <label
-                      key={doc.id}
-                      className={`flex items-center space-x-2 p-2 rounded-xl border text-[10px] font-semibold cursor-pointer transition-all duration-200 ${
-                        isChecked
-                          ? "bg-secondary/15 border-secondary/35 text-foreground"
-                          : "bg-background/40 border-card-border text-text-muted hover:border-card-border/60 hover:text-foreground"
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedDocIds((prev) => [...prev, doc.id]);
-                          } else {
-                            setSelectedDocIds((prev) => prev.filter((id) => id !== doc.id));
-                          }
-                        }}
-                        className="rounded border-card-border text-primary focus:ring-primary h-3.5 w-3.5 shrink-0 cursor-pointer"
-                      />
-                      <span className="truncate flex-1" title={doc.filename}>{doc.filename}</span>
-                    </label>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        )}
       </div>
     );
   };
@@ -696,19 +621,22 @@ function ChatPageContent() {
             >
               <Menu className="w-5 h-5" />
             </button>
-            <div className="hidden sm:block bg-primary/15 p-2 rounded-xl text-primary border border-primary/25">
-              <Cpu className="w-4 h-4" />
-            </div>
-            <div>
-              <span className="text-sm font-bold text-foreground block max-w-[120px] sm:max-w-none truncate">
-                {kbs.find((k) => k.id === selectedKBId)?.name || "Agentic RAG Engine"}
-              </span>
-              <span className="text-[10px] text-text-muted hidden sm:block">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <KBPicker
+                kbs={kbs}
+                value={selectedKBId}
+                onChange={(id) => {
+                  setSelectedKBId(id);
+                  handleCreateConversation(id);
+                }}
+              />
+              <DocumentPicker docs={kbDocs} loading={docsLoading} selected={selectedDocIds} onChange={setSelectedDocIds} />
+              <span className="hidden text-[11px] text-text-muted xl:block" title="How answers are retrieved">
                 {vectorSearchLive === null
-                  ? "BGE reranked retrieval"
+                  ? "Reranked retrieval"
                   : vectorSearchLive
-                    ? "Hybrid retrieval: BM25 + Qdrant, BGE reranked"
-                    : "Keyword retrieval: Postgres BM25, BGE reranked"}
+                    ? "Hybrid search · reranked"
+                    : "Keyword search · reranked"}
               </span>
             </div>
           </div>
@@ -1003,6 +931,30 @@ function ChatPageContent() {
 
             {/* Input Bar */}
             <div className="p-4 sm:p-6 border-t border-card-border/50 bg-card/25">
+              {selectedDocIds.length > 0 && (
+                <div className="mb-3 flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="text-text-muted">Answering only from:</span>
+                  {selectedDocIds.map((id) => {
+                    const d = kbDocs.find((x) => x.id === id);
+                    return (
+                      <span key={id} className="inline-flex max-w-[220px] items-center gap-1 rounded-full border border-[#ead9ad] bg-accent-soft py-0.5 pl-2.5 pr-1 text-foreground">
+                        <span className="truncate">{d?.filename ?? "Document"}</span>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedDocIds((prev) => prev.filter((x) => x !== id))}
+                          className="rounded-full p-0.5 text-muted-foreground hover:bg-white hover:text-foreground"
+                          aria-label={`Stop using ${d?.filename ?? "this document"}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    );
+                  })}
+                  <button type="button" onClick={() => setSelectedDocIds([])} className="ml-1 font-medium text-accent-hover hover:underline">
+                    Use all documents
+                  </button>
+                </div>
+              )}
               <form onSubmit={handleSendMessage} className="relative flex items-center">
                 <input
                   type="text"
@@ -1015,7 +967,9 @@ function ChatPageContent() {
                       ? "Select a knowledge base to begin..."
                       : (kbDocs.length === 0 && !docsLoading)
                         ? (webSearchEnabled ? "Query using Web Search (No documents in KB)..." : "No documents in KB. Please upload documents to chat.")
-                        : "Query knowledge base using agent RAG..."
+                        : selectedDocIds.length > 0
+                          ? `Ask about the ${selectedDocIds.length} selected document${selectedDocIds.length > 1 ? "s" : ""}…`
+                          : "Ask a question about this knowledge base…"
                   }
                   className="w-full bg-background border border-card-border rounded-xl pl-4 pr-16 py-4 text-foreground placeholder-text-muted focus:outline-none focus:border-primary disabled:opacity-50 text-sm"
                 />

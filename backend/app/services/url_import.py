@@ -19,7 +19,11 @@ import httpx
 
 MAX_REDIRECTS = 5
 TIMEOUT_SECONDS = 20
-USER_AGENT = "AegisRAG-Importer/1.0"
+# Many sites answer 403 to unknown bots, so look like a regular browser.
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36 AegisRAG-Importer/1.0"
+)
 
 
 class UrlImportError(ValueError):
@@ -127,10 +131,19 @@ def safe_filename(title: str, url: str, ext: str) -> str:
     return f"{base}{ext}"
 
 
-async def fetch_url(url: str, max_bytes: int) -> FetchedDocument:
+def normalize_url(url: str) -> str:
+    """Accept "example.com/page" as well as full links."""
     url = url.strip()
+    if url and "://" not in url:
+        url = "https://" + url
+    return url
+
+
+async def fetch_url(url: str, max_bytes: int) -> FetchedDocument:
+    url = normalize_url(url)
     async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS, follow_redirects=False,
-                                 headers={"User-Agent": USER_AGENT}) as client:
+                                 headers={"User-Agent": USER_AGENT,
+                                          "Accept": "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.8"}) as client:
         for _ in range(MAX_REDIRECTS + 1):
             await _assert_public_host(_check_scheme(url))
             async with client.stream("GET", url) as resp:
@@ -140,6 +153,8 @@ async def fetch_url(url: str, max_bytes: int) -> FetchedDocument:
                         raise UrlImportError("The site redirected without a destination.")
                     url = urljoin(url, location)
                     continue
+                if resp.status_code in (401, 403):
+                    raise UrlImportError(f"The site refused the download (HTTP {resp.status_code}). It may need a login or block automated access.")
                 if resp.status_code >= 400:
                     raise UrlImportError(f"The site answered with HTTP {resp.status_code}.")
                 ext = _ext_for(resp.headers.get("content-type", ""), url)

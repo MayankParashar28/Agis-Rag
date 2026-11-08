@@ -34,3 +34,9 @@ async def test_blocks_private_hosts(host):
 
 def test_safe_filename():
     assert safe_filename("A/B: report?", "https://x", ".txt") == "A B report.txt"
+
+
+def test_normalize_url_adds_scheme():
+    from app.services.url_import import normalize_url
+    assert normalize_url(" example.com/a ") == "https://example.com/a"
+    assert normalize_url("http://x.org") == "http://x.org"
