@@ -117,6 +117,13 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_MB: int = 50
     DEFAULT_CHUNK_SIZE: int = 1000
     DEFAULT_CHUNK_OVERLAP: int = 200
+    # Uploaded files are staged in Redis and handed to the Celery worker, which
+    # deletes them from Redis the moment it takes them. This TTL is only a
+    # safety net for jobs no worker ever picks up.
+    DOC_HANDOVER_TTL_SECONDS: int = 3600
+    # Celery task results/state also live in Redis; expire them so Redis
+    # empties itself instead of accumulating celery-task-meta-* keys.
+    CELERY_RESULT_EXPIRES_SECONDS: int = 3600
 
     # --- Rate limiting ------------------------------------------------------
     RATE_LIMIT: str = "100/minute"
