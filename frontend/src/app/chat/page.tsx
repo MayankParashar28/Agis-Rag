@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, Suspense } from "react";
+import { useCallback, useEffect, useState, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   MessageSquare,
@@ -21,7 +21,6 @@ import {
   X,
   ThumbsUp,
   ThumbsDown,
-  Eye,
   BookOpen,
   Pin,
   Notebook,
@@ -30,7 +29,8 @@ import {
   UploadCloud
 } from "lucide-react";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
-import { api, authStorage, KnowledgeBase, Conversation, Message, UserNote } from "@/lib/api";
+import CitationViewer from "@/components/chat/CitationViewer";
+import { api, authStorage, Citation, KnowledgeBase, Conversation, Message, UserNote, DocumentInfo } from "@/lib/api";
 
 function ChatPageContent() {
   const router = useRouter();
@@ -53,32 +53,34 @@ function ChatPageContent() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [agentStatus, setAgentStatus] = useState<string | null>(null);
   const [streamingText, setStreamingText] = useState("");
-  const [streamingCitations, setStreamingCitations] = useState<any[]>([]);
+  const [streamingCitations, setStreamingCitations] = useState<Citation[]>([]);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   
   // Diagnostics comparison (pre/post rerank vectors)
   const [retrievalStats, setRetrievalStats] = useState<any>(null);
 
   // NotebookLM Checklist Sources
-  const [kbDocs, setKbDocs] = useState<any[]>([]);
+  const [kbDocs, setKbDocs] = useState<DocumentInfo[]>([]);
   // Probed live by the backend. The header used to assert "BM25 + Qdrant"
   // unconditionally, which is wrong on a deployment that runs no Qdrant.
   const [vectorSearchLive, setVectorSearchLive] = useState<boolean | null>(null);
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
-  const [docsLoading, setDocsLoading] = useState(false);
+  // Which KB the loaded document list belongs to; loading = it is not the selected one yet.
+  const [docsKbId, setDocsKbId] = useState<string | null>(null);
+  const docsLoading = Boolean(selectedKBId) && docsKbId !== selectedKBId;
 
-  // Citation split-screen inspector
-  const [inspectorDocId, setInspectorDocId] = useState<string | null>(null);
-  const [inspectorDocName, setInspectorDocName] = useState<string | null>(null);
-  const [inspectorChunks, setInspectorChunks] = useState<any[]>([]);
-  const [inspectorLoading, setInspectorLoading] = useState(false);
-  const [highlightText, setHighlightText] = useState<string | null>(null);
-  const [activeCitationPage, setActiveCitationPage] = useState<number | null>(null);
+  // Citation viewer (side panel)
+  const [activeCitation, setActiveCitation] = useState<Citation | null>(null);
+  const closeCitation = useCallback(() => setActiveCitation(null), []);
+  const tempIdRef = useRef(0);
 
   // Notebook Guide Tab
   const [activeMainTab, setActiveMainTab] = useState<"chat" | "guide">("chat");
-  const [guide, setGuide] = useState<any | null>(null);
-  const [guideLoading, setGuideLoading] = useState(false);
+  // Guide is cached per KB; "loading" means the guide tab is open and the
+  // selected KB's guide has not arrived yet.
+  const [guideState, setGuideState] = useState<{ kbId: string; data: any | null } | null>(null);
+  const guide = guideState?.kbId === selectedKBId ? guideState.data : null;
+  const guideLoading = activeMainTab === "guide" && Boolean(selectedKBId) && guideState?.kbId !== selectedKBId;
 
   // Sticky Notes states
   const [showNotesPanel, setShowNotesPanel] = useState(false);
@@ -91,107 +93,24 @@ function ChatPageContent() {
   const [noteContent, setNoteContent] = useState("");
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
 
-  useEffect(() => {
-    const token = authStorage.getToken();
-    if (!token) {
-      router.push("/login");
-      return;
-    }
-    initChat();
-    api.getConfigStatus()
-      .then((c) => setVectorSearchLive(Boolean(c?.qdrant_connected)))
-      .catch(() => setVectorSearchLive(null));
-  }, [router]);
-
-  useEffect(() => {
-    // Autoscroll to bottom when streaming or new message arrives
-    chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingText, agentStatus]);
-
-  // Load documents and notes when KB selection changes
-  useEffect(() => {
-    if (!selectedKBId) return;
-    
-    setDocsLoading(true);
-    api.listDocs(selectedKBId)
-      .then((docs) => {
-        setKbDocs(docs || []);
-        setSelectedDocIds([]); // reset selection
-      })
-      .catch((err) => {
-        console.error("Failed to load documents:", err);
-      })
-      .finally(() => {
-        setDocsLoading(false);
-      });
-      
-    loadNotes();
-    setGuide(null);
-    if (activeMainTab === "guide") {
-      loadGuide();
-    }
-  }, [selectedKBId]);
-
-  // Load guide when guide tab is opened
-  useEffect(() => {
-    if (activeMainTab === "guide" && !guide && !guideLoading) {
-      loadGuide();
-    }
-  }, [activeMainTab]);
-
-  // Autoscroll to target citation page chunk in inspector
-  useEffect(() => {
-    if (inspectorChunks.length > 0 && activeCitationPage !== null) {
-      setTimeout(() => {
-        const element = document.getElementById(`chunk-page-${activeCitationPage}`);
-        if (element) {
-          element.scrollIntoView({ behavior: "smooth", block: "center" });
-        }
-      }, 100);
-    }
-  }, [inspectorChunks, activeCitationPage]);
-
   const loadNotes = async () => {
     if (!selectedKBId) return;
     try {
       const data = await api.listUserNotes(selectedKBId);
       setNotes(data || []);
-    } catch (e) {
+    } catch {
       
     }
   };
 
-  const loadGuide = async () => {
-    if (!selectedKBId) return;
-    setGuideLoading(true);
-    try {
-      const data = await api.getKBGuide(selectedKBId);
-      setGuide(data);
-    } catch (e) {
-      
-    } finally {
-      setGuideLoading(false);
-    }
-  };
+  // Retry: clearing the cached entry makes the guide effect fetch again.
+  const loadGuide = () => setGuideState(null);
 
-  const handleOpenCitationInspector = async (docName: string, pageNum: number, highlightContent: string) => {
-    const docObj = kbDocs.find((d) => d.filename === docName);
-    if (!docObj) return;
-    
-    setInspectorDocId(docObj.id);
-    setInspectorDocName(docName);
-    setInspectorLoading(true);
-    setHighlightText(highlightContent);
-    setActiveCitationPage(pageNum);
-    
-    try {
-      const data = await api.listDocChunks(docObj.id);
-      setInspectorChunks(data || []);
-    } catch (err) {
-      
-    } finally {
-      setInspectorLoading(false);
-    }
+  // Open a citation by its 1-based [Source N] number within a message.
+  const openCitationByIndex = (citations: Citation[] | undefined, n: number) => {
+    const list = citations || [];
+    const hit = list.find((c) => c.index === n) || list[n - 1];
+    if (hit) setActiveCitation({ ...hit, index: hit.index ?? n });
   };
 
   const handleFaqClick = (question: string) => {
@@ -211,7 +130,7 @@ function ChatPageContent() {
       });
       alert("Pinned to Sticky Notes successfully!");
       await loadNotes();
-    } catch (err) {
+    } catch {
       
       alert("Failed to pin note.");
     }
@@ -235,7 +154,7 @@ function ChatPageContent() {
       setNoteContent("");
       setEditingNoteId(null);
       await loadNotes();
-    } catch (e) {
+    } catch {
       
       alert("Failed to save note.");
     }
@@ -254,7 +173,7 @@ function ChatPageContent() {
       await api.deleteUserNote(noteId);
       setSelectedNoteIds((prev) => prev.filter((id) => id !== noteId));
       await loadNotes();
-    } catch (e) {
+    } catch {
       
     }
   };
@@ -266,7 +185,7 @@ function ChatPageContent() {
     try {
       const res = await api.synthesizeNotes(selectedNoteIds, format);
       setSynthesisText(res.synthesis);
-    } catch (e) {
+    } catch {
       
       alert("Failed to synthesize notes.");
     } finally {
@@ -274,10 +193,8 @@ function ChatPageContent() {
     }
   };
 
-  const initChat = async () => {
+  const initChat = async (kbList: KnowledgeBase[], convList: Conversation[]) => {
     try {
-      // 1. Fetch KBs
-      const kbList = await api.listKBs();
       setKbs(kbList);
       
       const queryKBId = searchParams.get("kb_id");
@@ -287,22 +204,20 @@ function ChatPageContent() {
         setSelectedKBId(kbList[0].id);
       }
 
-      // 2. Fetch Conversations
-      const convList = await api.listConversations();
       setConversations(convList);
       if (convList.length > 0) {
-        await handleSelectConversation(convList[0].id);
+        await handleSelectConversation(convList[0].id, convList);
       } else if (kbList.length > 0) {
         // Create initial conversation
         const targetKB = queryKBId || kbList[0].id;
         await handleCreateConversation(targetKB);
       }
-    } catch (err) {
+    } catch {
       
     }
   };
 
-  const handleSelectConversation = async (convId: string) => {
+  const handleSelectConversation = async (convId: string, convList: Conversation[] = conversations) => {
     setActiveConvId(convId);
     setStreamingText("");
     setStreamingCitations([]);
@@ -313,11 +228,11 @@ function ChatPageContent() {
       setMessages(msgList);
       
       // Update selected KB dropdown based on this conversation's KB
-      const convObj = conversations.find((c) => c.id === convId);
+      const convObj = convList.find((c) => c.id === convId);
       if (convObj && convObj.kb_id) {
         setSelectedKBId(convObj.kb_id);
       }
-    } catch (err) {
+    } catch {
       
     }
   };
@@ -337,7 +252,7 @@ function ChatPageContent() {
       setAgentStatus(null);
       setRetrievalStats(null);
       return newConv.id;
-    } catch (err) {
+    } catch {
       return null;
     }
   };
@@ -358,7 +273,7 @@ function ChatPageContent() {
         prev.map((c) => (c.id === convId ? { ...c, title: updatedConv.title } : c))
       );
       setEditingConvId(null);
-    } catch (err) {
+    } catch {
       
     } finally {
       setRenamingIds((prev) => prev.filter((id) => id !== convId));
@@ -383,7 +298,7 @@ function ChatPageContent() {
           await handleCreateConversation(selectedKBId);
         }
       }
-    } catch (err) {
+    } catch {
       
     } finally {
       setDeletingIds((prev) => prev.filter((id) => id !== convId));
@@ -398,7 +313,7 @@ function ChatPageContent() {
       setMessages((prev) =>
         prev.map((m) => (m.id === msgId ? { ...m, rating: targetRating } : m))
       );
-    } catch (err) {
+    } catch {
       
     }
   };
@@ -429,7 +344,7 @@ function ChatPageContent() {
 
     // Add user message locally
     const tempUserMsg: Message = {
-      id: `temp-user-${Date.now()}`,
+      id: `temp-user-${++tempIdRef.current}`,
       sender: "user",
       content: queryText,
       created_at: new Date().toISOString()
@@ -437,7 +352,7 @@ function ChatPageContent() {
     setMessages((prev) => [...prev, tempUserMsg]);
 
     let accumulatedText = "";
-    let finalCitations: any[] = [];
+    let finalCitations: Citation[] = [];
     let finalMetadata: any = null;
 
     const cancelStream = api.streamMessage(
@@ -480,7 +395,7 @@ function ChatPageContent() {
         
         // Add final assistant message locally
         const tempAssistantMsg: Message = {
-          id: `temp-assistant-${Date.now()}`,
+          id: `temp-assistant-${++tempIdRef.current}`,
           sender: "assistant",
           content: accumulatedText,
           citations: finalCitations,
@@ -492,6 +407,7 @@ function ChatPageContent() {
               ? finalMetadata.confidence_score / 100
               : undefined,
           confidence_method: finalMetadata?.confidence_method,
+          cached: Boolean(finalMetadata?.cached),
           query_log_id: finalMetadata?.query_log_id,
           created_at: new Date().toISOString()
         };
@@ -507,6 +423,63 @@ function ChatPageContent() {
       }
     );
   };
+
+  useEffect(() => {
+    const token = authStorage.getToken();
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+    // KBs and conversations load in parallel rather than one after the other.
+    Promise.all([api.listKBs(), api.listConversations()])
+      .then(([kbList, convList]) => initChat(kbList, convList))
+      .catch(() => undefined);
+    api.getConfigStatus()
+      .then((c) => setVectorSearchLive(Boolean(c?.qdrant_connected)))
+      .catch(() => setVectorSearchLive(null));
+  }, [router]);
+
+  useEffect(() => {
+    // Autoscroll to bottom when streaming or new message arrives
+    chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, streamingText, agentStatus]);
+
+  // Load documents and notes when KB selection changes
+  useEffect(() => {
+    if (!selectedKBId) return;
+    const kbId = selectedKBId;
+    let cancelled = false;
+    api.listDocs(kbId)
+      .then((docs) => {
+        if (cancelled) return;
+        setKbDocs(docs || []);
+        setSelectedDocIds([]); // reset selection
+        setDocsKbId(kbId);
+      })
+      .catch((err) => {
+        console.error("Failed to load documents:", err);
+        if (!cancelled) setDocsKbId(kbId);
+      });
+    api.listUserNotes(kbId)
+      .then((data) => !cancelled && setNotes(data || []))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedKBId]);
+
+  // Fetch the notebook guide when its tab is open and the KB's guide is not loaded.
+  useEffect(() => {
+    if (activeMainTab !== "guide" || !selectedKBId || guideState?.kbId === selectedKBId) return;
+    const kbId = selectedKBId;
+    let cancelled = false;
+    api.getKBGuide(kbId)
+      .then((data) => !cancelled && setGuideState({ kbId, data }))
+      .catch(() => !cancelled && setGuideState({ kbId, data: null }));
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMainTab, selectedKBId, guideState]);
 
   const followUps = [
     "Summarize the key takeaways of the document.",
@@ -542,7 +515,7 @@ function ChatPageContent() {
                   <form
                     key={conv.id}
                     onSubmit={(e) => handleSaveRename(conv.id, e)}
-                    className="w-full flex items-center space-x-1.5 px-2.5 py-2 rounded-2xl bg-card-border/20 border border-card-border"
+                    className="w-full flex items-center space-x-1.5 px-2.5 py-2 rounded-xl bg-card-border/20 border border-card-border"
                     onClick={(e) => e.stopPropagation()}
                   >
                     <input
@@ -555,7 +528,7 @@ function ChatPageContent() {
                     />
                     <button
                       type="submit"
-                      className="p-1 text-emerald-400 hover:bg-card-border/30 rounded-lg cursor-pointer"
+                      className="p-1 text-success hover:bg-card-border/30 rounded-lg cursor-pointer"
                       title="Save"
                     >
                       <Check className="w-3.5 h-3.5" />
@@ -563,7 +536,7 @@ function ChatPageContent() {
                     <button
                       type="button"
                       onClick={() => setEditingConvId(null)}
-                      className="p-1 text-red-400 hover:bg-card-border/30 rounded-lg cursor-pointer"
+                      className="p-1 text-danger hover:bg-card-border/30 rounded-lg cursor-pointer"
                       title="Cancel"
                     >
                       <X className="w-3.5 h-3.5" />
@@ -579,7 +552,7 @@ function ChatPageContent() {
                     handleSelectConversation(conv.id);
                     if (isMobile) setShowMobileSidebar(false);
                   }}
-                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-2xl text-left transition-all duration-200 group cursor-pointer ${
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left transition-all duration-200 group cursor-pointer ${
                     isActive
                       ? "bg-primary/10 border border-primary/25 text-foreground"
                       : "text-text-muted hover:bg-card-border/20 hover:text-foreground"
@@ -600,7 +573,7 @@ function ChatPageContent() {
                     </button>
                     <button
                       onClick={(e) => handleDeleteConversation(conv.id, e)}
-                      className="p-1 hover:bg-red-500/20 text-text-muted hover:text-red-400 rounded-lg cursor-pointer transition-colors"
+                      className="p-1 hover:bg-danger-soft text-text-muted hover:text-danger rounded-lg cursor-pointer transition-colors"
                       title="Delete Conversation"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -625,7 +598,7 @@ function ChatPageContent() {
               handleCreateConversation(e.target.value);
               if (isMobile) setShowMobileSidebar(false);
             }}
-            className="w-full bg-background border border-card-border rounded-2xl py-2 px-3 text-xs text-foreground focus:outline-none"
+            className="w-full bg-background border border-card-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none"
           >
             {kbs.map((kb) => (
               <option key={kb.id} value={kb.id}>
@@ -693,7 +666,7 @@ function ChatPageContent() {
   };
 
   return (
-    <div className="mt-4 h-[calc(100dvh-7rem)] md:mt-6 md:h-[calc(100vh-7.5rem)] flex gap-4 md:gap-6 overflow-hidden relative">
+    <div className="h-[calc(100dvh-5rem)] md:h-full flex gap-3 md:gap-4 overflow-hidden relative">
       {/* MOBILE LEFT: Conversation sidebar drawer */}
       {showMobileSidebar && (
         <>
@@ -708,12 +681,12 @@ function ChatPageContent() {
       )}
 
       {/* DESKTOP LEFT: Conversation sidebar */}
-      <div className="w-64 glass border border-card-border rounded-3xl p-4 flex flex-col justify-between shrink-0 lg:flex hidden">
+      <div className={`w-64 glass border border-card-border rounded-[14px] p-4 flex-col justify-between shrink-0 hidden ${activeCitation ? "2xl:flex" : "lg:flex"}`}>
         {renderSidebar(false)}
       </div>
 
       {/* RIGHT: Chat Window */}
-      <div className="flex-1 glass border border-card-border rounded-3xl flex flex-col justify-between overflow-hidden">
+      <div className="flex-1 glass border border-card-border rounded-[14px] flex flex-col justify-between overflow-hidden">
         {/* Top Header */}
         <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-card-border/50 flex flex-wrap gap-3 justify-between items-center bg-card/25">
           <div className="flex items-center space-x-2 sm:space-x-3">
@@ -741,12 +714,12 @@ function ChatPageContent() {
           </div>
 
           {/* Center Tab Selectors */}
-          <div className="flex bg-background/50 border border-card-border/50 p-1 rounded-2xl order-3 w-full sm:w-auto sm:order-2 justify-center">
+          <div className="flex bg-background/50 border border-card-border/50 p-1 rounded-xl order-3 w-full sm:w-auto sm:order-2 justify-center">
             <button
               onClick={() => setActiveMainTab("chat")}
               className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 cursor-pointer flex-1 sm:flex-none justify-center ${
                 activeMainTab === "chat"
-                  ? "bg-primary text-background shadow-md shadow-primary/15"
+                  ? "bg-primary text-background shadow-sm"
                   : "text-text-muted hover:text-foreground"
               }`}
             >
@@ -757,7 +730,7 @@ function ChatPageContent() {
               onClick={() => setActiveMainTab("guide")}
               className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 cursor-pointer flex-1 sm:flex-none justify-center ${
                 activeMainTab === "guide"
-                  ? "bg-primary text-background shadow-md shadow-primary/15"
+                  ? "bg-primary text-background shadow-sm"
                   : "text-text-muted hover:text-foreground"
               }`}
             >
@@ -801,16 +774,16 @@ function ChatPageContent() {
 
         {/* Warning Banner for empty Knowledge Base */}
         {selectedKBId && kbDocs.length === 0 && !docsLoading && (
-          <div className="bg-amber-500/10 border-b border-amber-500/25 px-4 sm:px-6 py-3 flex items-center justify-between text-xs text-amber-700 animate-in slide-in-from-top duration-300">
+          <div className="bg-warning-soft border-b border-[#f1dcb8] px-4 sm:px-6 py-3 flex items-center justify-between text-xs text-warning">
             <div className="flex items-center space-x-2">
-              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-700" />
+              <AlertTriangle className="w-4 h-4 shrink-0 text-warning" />
               <span>
                 <strong>No documents found:</strong> This knowledge base has no documents indexed. Please upload documents to enable RAG.
               </span>
             </div>
             <button
               onClick={() => router.push("/upload")}
-              className="text-[10px] font-bold uppercase tracking-wider px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-700 rounded-lg cursor-pointer transition-colors border border-amber-500/20 flex items-center gap-1.5 shrink-0"
+              className="text-[10px] font-bold uppercase tracking-wider px-3 py-1 bg-warning-soft hover:bg-[#f9e6c6] text-warning rounded-lg cursor-pointer transition-colors border border-[#f1dcb8] flex items-center gap-1.5 shrink-0"
             >
               <UploadCloud className="w-3.5 h-3.5" />
               <span>Upload Documents</span>
@@ -829,9 +802,9 @@ function ChatPageContent() {
                     <p className="text-sm text-text-muted">Loading documents...</p>
                   </div>
                 ) : kbDocs.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-full text-center px-4 animate-in fade-in zoom-in duration-500">
-                    <div className="w-16 h-16 bg-amber-500/10 rounded-full flex items-center justify-center mb-6 shadow-[0_0_30px_rgba(245,158,11,0.15)] border border-amber-500/20">
-                      <FileText className="w-8 h-8 text-amber-700" />
+                  <div className="flex flex-col items-center justify-center h-full text-center px-4">
+                    <div className="w-16 h-16 bg-warning-soft rounded-full flex items-center justify-center mb-6 border border-[#f1dcb8]">
+                      <FileText className="w-8 h-8 text-warning" />
                     </div>
                     <h2 className="text-2xl font-bold text-foreground mb-2">No documents found for this Knowledge Base</h2>
                     <p className="text-sm text-text-muted max-w-md mb-8">
@@ -839,15 +812,15 @@ function ChatPageContent() {
                     </p>
                     <button
                       onClick={() => router.push("/upload")}
-                      className="px-6 py-3 bg-primary hover:bg-primary-hover text-background font-bold rounded-2xl shadow-lg transition-all duration-200 cursor-pointer flex items-center gap-2 text-xs uppercase tracking-wider"
+                      className="px-6 py-3 bg-primary hover:bg-primary-hover text-background font-bold rounded-xl shadow-lg transition-all duration-200 cursor-pointer flex items-center gap-2 text-xs uppercase tracking-wider"
                     >
                       <UploadCloud className="w-4 h-4" />
                       <span>Upload Documents</span>
                     </button>
                   </div>
                 ) : (
-                  <div className="flex flex-col items-center justify-center h-full text-center px-4 animate-in fade-in zoom-in duration-500">
-                    <div className="w-16 h-16 bg-primary/15 rounded-full flex items-center justify-center mb-6 shadow-[0_0_30px_rgba(var(--primary-rgb),0.15)] border border-primary/20">
+                  <div className="flex flex-col items-center justify-center h-full text-center px-4">
+                    <div className="w-16 h-16 bg-primary/15 rounded-full flex items-center justify-center mb-6 border border-primary/20">
                       <Sparkles className="w-8 h-8 text-primary" />
                     </div>
                     <h2 className="text-2xl font-bold text-foreground mb-2">Welcome to Agis RAG</h2>
@@ -864,7 +837,7 @@ function ChatPageContent() {
                         <button
                           key={idx}
                           onClick={() => handleSendMessage(undefined, prompt)}
-                          className="text-left p-4 rounded-2xl bg-card border border-card-border/60 hover:border-primary/50 hover:bg-primary/5 transition-all group cursor-pointer"
+                          className="text-left p-4 rounded-xl bg-card border border-card-border/60 hover:border-primary/50 hover:bg-primary/5 transition-all group cursor-pointer"
                         >
                           <p className="text-sm text-muted-foreground group-hover:text-primary transition-colors">{prompt}</p>
                         </button>
@@ -878,23 +851,28 @@ function ChatPageContent() {
                     const isUser = msg.sender === "user";
                     return (
                       <div key={msg.id} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-                        <div className={`max-w-[90%] sm:max-w-[75%] rounded-3xl p-4 sm:p-5 ${
+                        <div className={`max-w-[90%] sm:max-w-[75%] rounded-[14px] p-4 sm:p-5 ${
                           isUser
-                            ? "bg-primary text-background rounded-br-none shadow-md shadow-primary/10"
+                            ? "bg-primary text-background rounded-br-none shadow-sm"
                             : "glass border border-card-border/50 text-foreground rounded-bl-none"
                         }`}>
                           {isUser ? (
                             <p className="text-sm leading-relaxed">{msg.content}</p>
                           ) : (
                             <div>
-                              <MarkdownRenderer content={msg.content} />
+                              <MarkdownRenderer content={msg.content} onCite={(n) => openCitationByIndex(msg.citations, n)} />
 
                           {/* Assistant actions bar (Metas and Note Pinning) */}
-                          <div className="mt-4 pt-3 border-t border-card-border/30 flex items-center justify-between text-[10px] text-text-muted font-mono">
-                            <div className="flex items-center space-x-4">
+                          <div className="mt-4 pt-3 border-t border-card-border/30 flex flex-wrap items-center justify-between gap-2 text-xs text-text-muted">
+                            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                              {msg.cached && (
+                                <span className="badge badge-accent" title="A near-identical question was answered before, so the saved answer was reused.">
+                                  <Sparkles className="w-3 h-3" />Instant answer
+                                </span>
+                              )}
                               {msg.latency && (
                                 <span className="flex items-center gap-1">
-                                  <Clock className="w-3 h-3 text-violet-400" />
+                                  <Clock className="w-3 h-3 text-muted-foreground" />
                                   <span>Latency: {msg.latency.toFixed(2)}s</span>
                                 </span>
                               )}
@@ -907,7 +885,7 @@ function ChatPageContent() {
                                       : "An LLM judged the answer against the retrieved sources."
                                   }
                                 >
-                                  <Sparkles className="w-3 h-3 text-cyan-400" />
+                                  <Sparkles className="w-3 h-3 text-info" />
                                   <span>
                                     {msg.confidence_method === "heuristic"
                                       ? "Overlap"
@@ -932,8 +910,8 @@ function ChatPageContent() {
                                 <div className="flex items-center space-x-2 border-l border-card-border/30 pl-2">
                                   <button
                                     onClick={() => handleRateMessage(msg.id, msg.query_log_id!, 1)}
-                                    className={`p-1 hover:bg-green-500/10 rounded-lg cursor-pointer transition-colors ${
-                                      msg.rating === 1 ? "text-green-400" : "text-text-muted hover:text-green-400"
+                                    className={`p-1 hover:bg-success-soft rounded-lg cursor-pointer transition-colors ${
+                                      msg.rating === 1 ? "text-success" : "text-text-muted hover:text-success"
                                     }`}
                                     title="Thumbs Up (Helpful)"
                                   >
@@ -941,8 +919,8 @@ function ChatPageContent() {
                                   </button>
                                   <button
                                     onClick={() => handleRateMessage(msg.id, msg.query_log_id!, -1)}
-                                    className={`p-1 hover:bg-red-500/10 rounded-lg cursor-pointer transition-colors ${
-                                      msg.rating === -1 ? "text-red-400" : "text-text-muted hover:text-red-400"
+                                    className={`p-1 hover:bg-danger-soft rounded-lg cursor-pointer transition-colors ${
+                                      msg.rating === -1 ? "text-danger" : "text-text-muted hover:text-danger"
                                     }`}
                                     title="Thumbs Down (Unhelpful)"
                                   >
@@ -956,19 +934,10 @@ function ChatPageContent() {
                           {/* Source Citations */}
                           {msg.citations && msg.citations.length > 0 && (
                             <div className="mt-4 pt-3 border-t border-card-border/30">
-                              <span className="text-[10px] uppercase font-bold text-text-muted block mb-2 tracking-wider">Citations</span>
+                              <span className="text-[11px] font-semibold text-muted-foreground block mb-2">Sources · click to open the passage</span>
                               <div className="flex flex-wrap gap-2">
                                 {msg.citations.map((cit, cIdx) => (
-                                  <button
-                                    key={cIdx}
-                                    onClick={() => handleOpenCitationInspector(cit.source_doc, cit.page, msg.content)}
-                                    className="flex items-center space-x-1.5 px-3 py-1 bg-card border border-card-border rounded-xl text-xs text-primary hover:border-primary/50 transition-colors cursor-pointer text-left"
-                                    title="Inspect Passage"
-                                  >
-                                    <FileText className="w-3 h-3 shrink-0" />
-                                    <span className="max-w-[120px] truncate">{cit.source_doc}</span>
-                                    <span className="text-[10px] text-text-muted font-bold shrink-0">p.{cit.page}</span>
-                                  </button>
+                                  <CitationChip key={cIdx} cit={cit} n={cIdx + 1} onOpen={() => setActiveCitation({ ...cit, index: cit.index ?? cIdx + 1 })} />
                                 ))}
                               </div>
                             </div>
@@ -983,7 +952,7 @@ function ChatPageContent() {
               {/* Streaming Assistant output */}
               {isStreaming && (streamingText || agentStatus) && (
                 <div className="flex justify-start animate-pulse-slow">
-                  <div className="max-w-[90%] sm:max-w-[75%] rounded-3xl p-4 sm:p-5 glass border border-card-border/50 text-foreground rounded-bl-none">
+                  <div className="max-w-[90%] sm:max-w-[75%] rounded-[14px] p-4 sm:p-5 glass border border-card-border/50 text-foreground rounded-bl-none">
                     {agentStatus && (
                       <div className="flex items-center space-x-2.5 text-xs text-text-muted py-1.5">
                         <Loader2 className="w-4 h-4 text-primary animate-spin" />
@@ -992,24 +961,15 @@ function ChatPageContent() {
                     )}
                     {streamingText && (
                       <div>
-                        <MarkdownRenderer content={streamingText} />
+                        <MarkdownRenderer content={streamingText} onCite={(n) => openCitationByIndex(streamingCitations, n)} />
                         
                         {/* Citations preview */}
                         {streamingCitations.length > 0 && (
                           <div className="mt-4 pt-3 border-t border-card-border/30">
-                            <span className="text-[10px] uppercase font-bold text-text-muted block mb-2 tracking-wider">Citations</span>
+                            <span className="text-[11px] font-semibold text-muted-foreground block mb-2">Sources · click to open the passage</span>
                             <div className="flex flex-wrap gap-2">
                               {streamingCitations.map((cit, cIdx) => (
-                                <button
-                                  key={cIdx}
-                                  onClick={() => handleOpenCitationInspector(cit.source_doc, cit.page, streamingText)}
-                                  className="flex items-center space-x-1.5 px-3 py-1 bg-card border border-card-border rounded-xl text-xs text-primary hover:border-primary/50 transition-colors cursor-pointer text-left"
-                                  title="Inspect Passage"
-                                >
-                                  <FileText className="w-3 h-3 shrink-0" />
-                                  <span className="max-w-[120px] truncate">{cit.source_doc}</span>
-                                  <span className="text-[10px] text-text-muted font-bold shrink-0">p.{cit.page}</span>
-                                </button>
+                                <CitationChip key={cIdx} cit={cit} n={cIdx + 1} onOpen={() => setActiveCitation({ ...cit, index: cit.index ?? cIdx + 1 })} />
                               ))}
                             </div>
                           </div>
@@ -1027,12 +987,12 @@ function ChatPageContent() {
 
             {/* Suggested Queries */}
             {!isStreaming && messages.length > 0 && (
-              <div className="px-6 py-2 flex flex-wrap gap-2 bg-card/10 border-t border-card-border/30">
+              <div className="px-4 sm:px-6 py-2 flex gap-2 overflow-x-auto border-t border-card-border/30 [scrollbar-width:none]">
                 {followUps.map((item, idx) => (
                   <button
                     key={idx}
                     onClick={() => handleSendMessage(undefined, item)}
-                    className="flex items-center space-x-1 text-xs text-text-muted hover:text-foreground px-3 py-1.5 bg-card border border-card-border/50 rounded-xl hover:border-card-border transition-colors cursor-pointer"
+                    className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-text-muted hover:text-foreground px-3 py-1.5 bg-card border border-card-border rounded-full hover:border-border-strong transition-colors cursor-pointer"
                   >
                     <span>{item}</span>
                     <ChevronRight className="w-3 h-3" />
@@ -1057,7 +1017,7 @@ function ChatPageContent() {
                         ? (webSearchEnabled ? "Query using Web Search (No documents in KB)..." : "No documents in KB. Please upload documents to chat.")
                         : "Query knowledge base using agent RAG..."
                   }
-                  className="w-full bg-background border border-card-border rounded-2xl pl-4 pr-16 py-4 text-foreground placeholder-text-muted focus:outline-none focus:border-primary disabled:opacity-50 text-sm"
+                  className="w-full bg-background border border-card-border rounded-xl pl-4 pr-16 py-4 text-foreground placeholder-text-muted focus:outline-none focus:border-primary disabled:opacity-50 text-sm"
                 />
                 <button
                   type="submit"
@@ -1080,7 +1040,7 @@ function ChatPageContent() {
             ) : guide ? (
               <div className="space-y-6">
                 {/* Briefing Summary */}
-                <div className="glass border border-card-border/50 rounded-3xl p-6 relative overflow-hidden">
+                <div className="glass border border-card-border/50 rounded-[14px] p-6 relative overflow-hidden">
                   <div className="absolute top-0 right-0 w-32 h-32 bg-primary/10 rounded-full blur-3xl pointer-events-none" />
                   <div className="flex items-center space-x-2 mb-4">
                     <Sparkles className="w-5 h-5 text-primary animate-pulse" />
@@ -1091,7 +1051,7 @@ function ChatPageContent() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* FAQs Section */}
-                  <div className="glass border border-card-border/50 rounded-3xl p-6 flex flex-col h-fit">
+                  <div className="glass border border-card-border/50 rounded-[14px] p-6 flex flex-col h-fit">
                     <div className="flex items-center space-x-2 mb-4">
                       <BookOpen className="w-5 h-5 text-secondary" />
                       <h3 className="text-base font-bold text-foreground">Suggested FAQs</h3>
@@ -1099,7 +1059,7 @@ function ChatPageContent() {
                     <div className="space-y-3">
                       {guide.faqs && guide.faqs.length > 0 ? (
                         guide.faqs.map((faq: any, index: number) => (
-                          <div key={index} className="border border-card-border/40 rounded-2xl overflow-hidden bg-card/20 hover:border-card-border transition-colors">
+                          <div key={index} className="border border-card-border/40 rounded-xl overflow-hidden bg-card/20 hover:border-card-border transition-colors">
                             <details className="group">
                               <summary className="flex justify-between items-center p-4 text-xs font-bold text-foreground cursor-pointer select-none">
                                 <span className="pr-4">{faq.question}</span>
@@ -1127,7 +1087,7 @@ function ChatPageContent() {
                   </div>
 
                   {/* Glossary Section */}
-                  <div className="glass border border-card-border/50 rounded-3xl p-6 flex flex-col h-fit">
+                  <div className="glass border border-card-border/50 rounded-[14px] p-6 flex flex-col h-fit">
                     <div className="flex items-center space-x-2 mb-4">
                       <Compass className="w-5 h-5 text-accent" />
                       <h3 className="text-base font-bold text-foreground">Glossary of Key Terms</h3>
@@ -1136,7 +1096,7 @@ function ChatPageContent() {
                       {guide.key_terms && guide.key_terms.length > 0 ? (
                         <div className="grid grid-cols-1 gap-3">
                           {guide.key_terms.map((item: any, index: number) => (
-                            <div key={index} className="p-4 rounded-2xl border border-card-border/30 bg-card/10 hover:border-card-border transition-colors">
+                            <div key={index} className="p-4 rounded-xl border border-card-border/30 bg-card/10 hover:border-card-border transition-colors">
                               <span className="text-xs font-bold text-foreground block mb-1">{item.term}</span>
                               <span className="text-xs text-text-muted leading-relaxed">{item.definition}</span>
                             </div>
@@ -1173,7 +1133,7 @@ function ChatPageContent() {
             className="fixed inset-0 bg-background/60 backdrop-blur-sm z-[60] lg:hidden"
             onClick={() => setShowNotesPanel(false)}
           />
-          <div className="fixed inset-y-0 right-0 z-[70] w-full max-w-[320px] bg-background/95 border-l border-card-border p-4 flex flex-col justify-between overflow-hidden animate-slide-in-right lg:relative lg:inset-auto lg:w-80 lg:bg-transparent lg:border lg:rounded-3xl lg:z-auto shrink-0 glass">
+          <div className="fixed inset-y-0 right-0 z-[70] w-full max-w-[320px] bg-background/95 border-l border-card-border p-4 flex flex-col justify-between overflow-hidden animate-slide-in-right lg:relative lg:inset-auto lg:w-80 lg:bg-transparent lg:border lg:rounded-[14px] lg:z-auto shrink-0 glass">
           <div className="flex flex-col h-full overflow-hidden space-y-4">
             {/* Header */}
             <div className="flex justify-between items-center pb-2 border-b border-card-border/50">
@@ -1217,7 +1177,7 @@ function ChatPageContent() {
                   return (
                     <div
                       key={note.id}
-                      className={`p-3 rounded-2xl border text-xs relative group transition-all duration-200 ${
+                      className={`p-3 rounded-xl border text-xs relative group transition-all duration-200 ${
                         isSelected
                           ? "bg-accent/10 border-accent/45"
                           : "bg-card/25 border-card-border/60 hover:border-card-border"
@@ -1249,7 +1209,7 @@ function ChatPageContent() {
                           </button>
                           <button
                             onClick={() => handleDeleteNote(note.id)}
-                            className="p-1 text-text-muted hover:text-red-400 hover:bg-red-500/10 rounded-md cursor-pointer"
+                            className="p-1 text-text-muted hover:text-danger hover:bg-danger-soft rounded-md cursor-pointer"
                             title="Delete"
                           >
                             <Trash2 className="w-3 h-3" />
@@ -1315,7 +1275,7 @@ function ChatPageContent() {
                   </button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto pr-1 text-xs leading-relaxed text-muted-foreground space-y-3 bg-card/25 border border-card-border/40 p-3 rounded-2xl">
+                <div className="flex-1 overflow-y-auto pr-1 text-xs leading-relaxed text-muted-foreground space-y-3 bg-card/25 border border-card-border/40 p-3 rounded-xl">
                   <MarkdownRenderer content={synthesisText} />
                 </div>
 
@@ -1344,92 +1304,13 @@ function ChatPageContent() {
         </>
       )}
 
-      {/* CITATION PASSAGE INSPECTOR PANEL */}
-      {inspectorDocId && (
-        <>
-          {/* Mobile Overlay */}
-          <div
-            className="fixed inset-0 bg-background/60 backdrop-blur-sm z-[60] lg:hidden"
-            onClick={() => {
-              setInspectorDocId(null);
-              setInspectorDocName(null);
-              setInspectorChunks([]);
-              setActiveCitationPage(null);
-            }}
-          />
-          <div className="fixed inset-y-0 right-0 z-[70] w-full max-w-[320px] bg-background/95 border-l border-card-border p-4 flex flex-col justify-between overflow-hidden animate-slide-in-right lg:relative lg:inset-auto lg:w-80 lg:bg-transparent lg:border lg:rounded-3xl lg:z-auto shrink-0 glass">
-          <div className="flex flex-col h-full overflow-hidden space-y-4">
-            {/* Header */}
-            <div className="flex justify-between items-center pb-2 border-b border-card-border/50">
-              <div className="flex items-center space-x-2 min-w-0 flex-1">
-                <Eye className="w-4 h-4 text-secondary" />
-                <span className="text-sm font-bold text-foreground truncate" title={inspectorDocName || "Source Inspector"}>
-                  {inspectorDocName || "Source Inspector"}
-                </span>
-              </div>
-              <button
-                onClick={() => {
-                  setInspectorDocId(null);
-                  setInspectorDocName(null);
-                  setInspectorChunks([]);
-                  setActiveCitationPage(null);
-                }}
-                className="p-1 hover:bg-card-border/30 rounded-lg text-text-muted hover:text-foreground cursor-pointer shrink-0"
-                title="Close Inspector"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-
-            {/* Chunks list */}
-            <div className="flex-1 overflow-y-auto space-y-4 pr-1">
-              {inspectorLoading ? (
-                <div className="flex flex-col items-center justify-center h-48 text-text-muted">
-                  <Loader2 className="w-8 h-8 animate-spin text-secondary mb-2" />
-                  <p className="text-xs">Loading source passages...</p>
-                </div>
-              ) : inspectorChunks.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-48 text-text-muted text-center">
-                  <FileText className="w-8 h-8 text-text-muted/40 mb-2" />
-                  <p className="text-xs">No passages found for this document.</p>
-                </div>
-              ) : (
-                inspectorChunks.map((chunk) => {
-                  const isTargetPage = chunk.page_number === activeCitationPage;
-                  return (
-                    <div
-                      key={chunk.id}
-                      id={`chunk-page-${chunk.page_number}`}
-                      className={`p-5 rounded-2xl border text-xs leading-relaxed transition-all duration-300 hover:border-primary/50 hover:bg-background/60 ${
-                        isTargetPage
-                          ? "bg-secondary/15 border-secondary/50 shadow-md shadow-secondary/5 accent-glow"
-                          : "bg-card/25 border-card-border/60"
-                      }`}
-                    >
-                      <div className="flex justify-between items-center mb-3 pb-2 border-b border-card-border/30 text-[10px] text-text-muted font-mono">
-                        <span className="flex items-center gap-1">
-                          <FileText className="w-3.5 h-3.5 text-secondary" />
-                          <span>Page {chunk.page_number || "N/A"}</span>
-                        </span>
-                        <span>Index {chunk.chunk_index || 0}</span>
-                      </div>
-                      <p className="text-[11px] text-muted-foreground whitespace-pre-wrap leading-normal font-sans pr-1">
-                        {chunk.content}
-                      </p>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        </div>
-        </>
-      )}
+      {/* CITATION VIEWER */}
+      <CitationViewer citation={activeCitation} kbDocs={kbDocs} onClose={closeCitation} />
 
       {/* CREATE/EDIT STICKY NOTE MODAL DIALOG */}
       {isNoteModalOpen && (
         <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 md:pl-72">
-          <div className="w-full max-w-md bg-card border border-card-border rounded-3xl p-6 shadow-2xl relative overflow-hidden animate-zoom-in">
+          <div className="w-full max-w-md bg-card border border-card-border rounded-[14px] p-6 shadow-2xl relative overflow-hidden animate-zoom-in">
             <div className="absolute top-0 right-0 w-32 h-32 bg-accent/10 rounded-full blur-3xl pointer-events-none" />
             <div className="flex justify-between items-center mb-4 pb-2 border-b border-card-border/50">
               <h3 className="text-sm font-bold text-foreground flex items-center gap-1.5">
@@ -1499,5 +1380,20 @@ export default function ChatPage() {
     }>
       <ChatPageContent />
     </Suspense>
+  );
+}
+
+function CitationChip({ cit, n, onOpen }: { cit: Citation; n: number; onOpen: () => void }) {
+  return (
+    <button
+      onClick={onOpen}
+      className="group flex max-w-[260px] items-center gap-2 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-left text-xs transition-colors hover:border-accent hover:bg-accent-soft/50"
+      title={cit.snippet ? cit.snippet.slice(0, 280) : "Open the cited passage"}
+    >
+      <span className="cite-ref m-0 shrink-0">{cit.index ?? n}</span>
+      {cit.url ? <Globe className="h-3 w-3 shrink-0 text-muted-foreground" /> : <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />}
+      <span className="truncate font-medium text-foreground">{cit.source_doc}</span>
+      {cit.page != null && <span className="shrink-0 text-muted-foreground">p.{cit.page}</span>}
+    </button>
   );
 }

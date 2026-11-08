@@ -35,19 +35,52 @@ export interface DocumentInfo {
   created_at: string;
 }
 
+export interface Citation {
+  index?: number;
+  source_doc: string;
+  page: number | null;
+  score: number;
+  snippet?: string;
+  doc_id?: string;
+  chunk_id?: string;
+  url?: string;
+}
+
+export interface IndexingProgress {
+  doc_id: string;
+  stage: "queued" | "receiving" | "parsing" | "chunking" | "embedding" | "saving" | "done" | "failed";
+  label: string;
+  percent: number;
+  message: string | null;
+  status?: string;
+  updated_at?: number;
+}
+
+export interface ChunkContext {
+  chunk: { id: string; content: string; page_number: number | null; chunk_index: number | null };
+  before: string | null;
+  after: string | null;
+  document: {
+    id: string;
+    kb_id: string;
+    filename: string;
+    file_type: string;
+    source_url: string | null;
+    has_file: boolean;
+  };
+}
+
 export interface Message {
   id: string;
   sender: "user" | "assistant";
   content: string;
-  citations?: Array<{
-    source_doc: string;
-    page: number;
-    score: number;
-  }>;
+  citations?: Citation[];
   latency?: number;
   retrieval_score?: number;
   // "llm" when a judge scored it, "heuristic" when it is a lexical proxy.
   confidence_method?: string;
+  // True when the answer came from the semantic answer cache.
+  cached?: boolean;
   created_at: string;
   query_log_id?: string;
   rating?: number;
@@ -146,6 +179,11 @@ export interface EvaluationResult {
 
 // Token Storage
 const TOKEN_KEY = "rag_access_token";
+
+// Same-tab listeners (useCurrentUser) do not receive "storage" events.
+function notifyAuthChange() {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("agis:user"));
+}
 const USER_KEY = "rag_user_data";
 
 export const authStorage = {
@@ -162,6 +200,7 @@ export const authStorage = {
       const secure = window.location.protocol === "https:" ? "; secure" : "";
       document.cookie = `${TOKEN_KEY}=${token}; path=/; max-age=604800; samesite=lax${secure}`;
     }
+    notifyAuthChange();
   },
   clear: () => {
     if (typeof window !== "undefined") {
@@ -172,6 +211,7 @@ export const authStorage = {
       document.cookie = `${TOKEN_KEY}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; max-age=0; samesite=lax`;
     }
     clearApiCache();
+    notifyAuthChange();
   },
   getUser: (): User | null => {
     if (typeof window === "undefined") return null;
@@ -182,12 +222,26 @@ export const authStorage = {
     if (typeof window !== "undefined") {
       localStorage.setItem(USER_KEY, JSON.stringify(user));
     }
+    notifyAuthChange();
   },
 };
 
 // Client-side caching layer to speed up page transitions and avoid blocking loaders
-const apiCache: Record<string, { data: any; timestamp: number }> = {};
+const apiCache: Record<string, { data: unknown; timestamp: number }> = {};
 const CACHE_TTL = 30000; // 30 seconds cache validity
+const STALE_TTL = 10 * 60 * 1000; // stale data may still be shown instantly for 10 min
+
+/**
+ * Last known response for a GET path, even if it is past its fresh window.
+ * Pages render this immediately and refresh in the background
+ * (stale-while-revalidate), so revisiting a page never shows a blank loader.
+ */
+export function peekApiCache<T>(path: string): T | undefined {
+  if (typeof window === "undefined") return undefined;
+  const hit = apiCache[path];
+  if (hit && Date.now() - hit.timestamp < STALE_TTL) return hit.data as T;
+  return undefined;
+}
 
 export const clearApiCache = (pathPrefix?: string) => {
   if (typeof window === "undefined") return;
@@ -276,7 +330,7 @@ async function request<T>(
     try {
       const errorJson = await response.json();
       errMsg = errorJson.detail || errMsg;
-    } catch (_) {}
+    } catch {}
     throw new Error(errMsg);
   }
 
@@ -330,6 +384,29 @@ export const api = {
   },
   listDocs: (kbId: string, opts?: { noCache?: boolean }) =>
     request<DocumentInfo[]>(`/documents/${kbId}`, {}, opts),
+  importUrl: (kbId: string, url: string, chunkSize: number = 1000, chunkOverlap: number = 200) =>
+    request<DocumentInfo>("/documents/import-url", {
+      method: "POST",
+      body: JSON.stringify({ kb_id: kbId, url, chunk_size: chunkSize, chunk_overlap: chunkOverlap }),
+    }),
+  getIndexingProgress: (kbId: string) =>
+    request<Record<string, IndexingProgress>>(`/documents/kb/${kbId}/progress`, {}, { noCache: true }),
+  getChunkContext: (chunkId: string) => request<ChunkContext>(`/documents/chunks/${chunkId}/context`),
+  /** Fetch the original file (authenticated) as a blob URL the browser can open. */
+  getDocumentFileUrl: async (docId: string): Promise<string> => {
+    const token = authStorage.getToken();
+    const res = await fetch(`${API_BASE_URL}/documents/${docId}/file`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      let msg = "Could not open the original file.";
+      try {
+        msg = (await res.json()).detail || msg;
+      } catch {}
+      throw new Error(msg);
+    }
+    return URL.createObjectURL(await res.blob());
+  },
   deleteDoc: (docId: string) => request<void>(`/documents/${docId}`, { method: "DELETE" }),
   reindexDoc: (docId: string) => request<DocumentInfo>(`/documents/${docId}/reindex`, { method: "POST" }),
 
