@@ -331,6 +331,11 @@ async function request<T>(
       const errorJson = await response.json();
       errMsg = errorJson.detail || errMsg;
     } catch {}
+    // FastAPI's own "Not Found" means the route does not exist at all - the
+    // backend is older than this frontend.
+    if (response.status === 404 && errMsg === "Not Found") {
+      errMsg = "This feature is not available on the server yet. Deploy the latest backend and try again.";
+    }
     throw new Error(errMsg);
   }
 

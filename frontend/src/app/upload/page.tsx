@@ -50,19 +50,25 @@ function UploadPageContent() {
   const hasProcessing = processingIds.length > 0;
 
   // Live progress: poll quickly while anything is indexing, stop when idle.
+  // The document list is re-read from the database every few ticks as well,
+  // so a finished document flips to "Ready" even when no live progress
+  // arrives (older backend, Redis unreachable) - no page refresh needed.
   useEffect(() => {
     if (!selectedKBId || !hasProcessing) return;
     let cancelled = false;
+    let ticks = 0;
     const tick = async () => {
+      ticks += 1;
+      let finished = ticks % 3 === 0;
       try {
         const live = await api.getIndexingProgress(selectedKBId);
         if (cancelled) return;
         setProgress(live);
-        const finished = Object.values(live).some((p) => p.stage === "done" || p.stage === "failed");
-        if (finished) await reloadDocs();
+        if (Object.values(live).some((p) => p.stage === "done" || p.stage === "failed")) finished = true;
       } catch {
-        /* transient; next tick retries */
+        if (!cancelled) setProgress({});
       }
+      if (finished && !cancelled) await reloadDocs();
     };
     tick();
     const id = setInterval(tick, 1500);
@@ -106,10 +112,12 @@ function UploadPageContent() {
   const handleImportUrl = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!url.trim() || !selectedKBId) return;
+    // Accept "example.com/page" as well as full links.
+    const link = /^[a-z][a-z0-9+.-]*:\/\//i.test(url.trim()) ? url.trim() : `https://${url.trim()}`;
     setImporting(true);
     setNotice(null);
     try {
-      const doc = await api.importUrl(selectedKBId, url.trim(), chunkSize, chunkOverlap);
+      const doc = await api.importUrl(selectedKBId, link, chunkSize, chunkOverlap);
       setDocuments((prev) => [doc, ...(prev ?? [])]);
       setUrl("");
       setNotice({ tone: "success", text: `Imported "${doc.filename}". Indexing has started.` });
@@ -230,10 +238,10 @@ function UploadPageContent() {
               <Card className="p-5">
                 <form onSubmit={handleImportUrl} className="space-y-3">
                   <label htmlFor="import-url" className="label flex items-center gap-2"><Globe className="h-4 w-4 text-muted-foreground" />Import from a link</label>
-                  <div className="flex gap-2">
+                  <div className="flex flex-col gap-2 sm:flex-row xl:flex-col 2xl:flex-row">
                     <div className="relative min-w-0 flex-1">
                       <Link2 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                      <input id="import-url" type="url" required placeholder="https://example.com/handbook" value={url} onChange={(e) => setUrl(e.target.value)} className="input pl-9" />
+                      <input id="import-url" type="text" inputMode="url" autoComplete="url" required placeholder="example.com/handbook" value={url} onChange={(e) => setUrl(e.target.value)} className="input pl-9" />
                     </div>
                     <button className="btn btn-primary" disabled={importing || !url.trim()}>
                       {importing ? <Spinner /> : null}Import
