@@ -127,11 +127,17 @@ async def get_config_status(
 
     # --- Redis ---
     redis_connected = False
+    redis_pending_documents = None
     try:
         from app.core.redis_client import redis_client
         if redis_client is not None:
             await redis_client.ping()
             redis_connected = True
+            # Documents staged for a worker but not yet taken. This should
+            # drain back to 0 once the worker has picked every upload up.
+            import asyncio
+            from app.services import doc_store
+            redis_pending_documents = await asyncio.to_thread(doc_store.count_staged)
     except Exception as e:
         logger.warning(f"config-status: Redis probe failed: {e}")
 
@@ -150,6 +156,7 @@ async def get_config_status(
     return {
         "postgres_connected": postgres_connected,
         "redis_connected": redis_connected,
+        "redis_pending_documents": redis_pending_documents,
         "qdrant_connected": qdrant_connected,
         "qdrant_collections": collection_count,
         "openai_configured": bool(settings.OPENAI_API_KEY),

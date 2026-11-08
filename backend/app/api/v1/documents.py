@@ -1,5 +1,6 @@
 import os
 import uuid
+import asyncio
 import shutil
 import time
 from typing import Any, List
@@ -17,6 +18,7 @@ from app.models.knowledge import KnowledgeBase, Document, DocumentChunk
 from app.schemas.knowledge import DocumentResponse, DocumentChunkResponse
 from app.services.parser import document_parser
 from app.services.indexer import document_indexer
+from app.services import doc_store
 from app.core.logging import logger
 from app.core.config import settings
 from app.worker import process_document_task, queue_name
@@ -27,6 +29,28 @@ router = APIRouter()
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+async def _dispatch_processing(doc_id: str, file_path: str, filename: str,
+                               chunk_size: int, chunk_overlap: int) -> None:
+    """Stage the document in Redis and queue the Celery job that consumes it.
+
+    The worker reads the bytes from Redis (so it does not need to share a disk
+    with the API) and deletes the key in the same atomic step. If Redis cannot
+    take the file, the job still carries the file path as a fallback.
+    """
+    redis_key = await asyncio.to_thread(doc_store.stage_document, doc_id, file_path)
+    try:
+        process_document_task.apply_async(
+            args=[doc_id, file_path, filename, chunk_size, chunk_overlap],
+            kwargs={"redis_key": redis_key},
+            queue=queue_name,
+        )
+    except Exception:
+        # The job never reached the queue: do not leave the bytes in Redis.
+        if redis_key:
+            await asyncio.to_thread(doc_store.discard_document, redis_key)
+        raise
+
 
 # Background task to parse, chunk, and index the document
 async def process_document_background(
@@ -151,17 +175,9 @@ async def upload_document(
     await db.commit()
     await db.refresh(db_doc)
 
-    # 5. Delegate processing to Celery background task
-    process_document_task.apply_async(
-        args=[
-            str(db_doc.id),
-            dest_path,
-            file.filename,
-            chunk_size,
-            chunk_overlap
-        ],
-        queue=queue_name
-    )
+    # 5. Stage the file in Redis and hand it to the Celery worker. The worker
+    #    deletes the Redis copy as soon as it takes it.
+    await _dispatch_processing(str(db_doc.id), dest_path, file.filename, chunk_size, chunk_overlap)
 
     return db_doc
 
@@ -292,15 +308,12 @@ async def reindex_document(
     # Reuse the chunk settings chosen at upload time instead of silently
     # falling back to the task's 1000/200 defaults.
     meta = doc.meta_info or {}
-    process_document_task.apply_async(
-        args=[
-            str(doc.id),
-            local_path,
-            doc.filename,
-            meta.get("chunk_size", settings.DEFAULT_CHUNK_SIZE),
-            meta.get("chunk_overlap", settings.DEFAULT_CHUNK_OVERLAP)
-        ],
-        queue=queue_name
+    await _dispatch_processing(
+        str(doc.id),
+        local_path,
+        doc.filename,
+        meta.get("chunk_size", settings.DEFAULT_CHUNK_SIZE),
+        meta.get("chunk_overlap", settings.DEFAULT_CHUNK_OVERLAP),
     )
 
     return doc
@@ -415,15 +428,12 @@ async def admin_reindex_document(
     # Reuse the chunk settings chosen at upload time instead of silently
     # falling back to the task's 1000/200 defaults.
     meta = doc.meta_info or {}
-    process_document_task.apply_async(
-        args=[
-            str(doc.id),
-            local_path,
-            doc.filename,
-            meta.get("chunk_size", settings.DEFAULT_CHUNK_SIZE),
-            meta.get("chunk_overlap", settings.DEFAULT_CHUNK_OVERLAP)
-        ],
-        queue=queue_name
+    await _dispatch_processing(
+        str(doc.id),
+        local_path,
+        doc.filename,
+        meta.get("chunk_size", settings.DEFAULT_CHUNK_SIZE),
+        meta.get("chunk_overlap", settings.DEFAULT_CHUNK_OVERLAP),
     )
 
     return {"status": "success", "message": "Reindexing scheduled successfully."}

@@ -1,4 +1,5 @@
 import asyncio
+import os
 from celery import Celery
 from app.core.config import settings
 
@@ -36,6 +37,9 @@ celery_app.conf.update(
         "retry_on_timeout": True,
         "max_connections": 10,
     },
+    # Keep Redis clean: any task results/state that are stored expire instead
+    # of piling up as celery-task-meta-* keys.
+    result_expires=settings.CELERY_RESULT_EXPIRES_SECONDS,
     redis_backend_health_check_interval=30,
     result_backend_transport_options={
         "socket_timeout": 30,
@@ -57,9 +61,22 @@ def run_async(func, *args, **kwargs):
         except Exception:
             pass
 
-@celery_app.task(bind=True, name="process_document_task")
+from celery.signals import worker_process_init
+
+
+@worker_process_init.connect
+def _reset_redis_after_fork(**_kwargs):
+    # A prefork child must not reuse a socket opened by the parent process.
+    from app.services import doc_store
+    doc_store.reset_client()
+
+
+# ignore_result: nothing reads this task's return value (status lives in
+# Postgres), so storing it would only leave keys behind in Redis.
+@celery_app.task(bind=True, name="process_document_task", ignore_result=True)
 def process_document_task(self, doc_id_str: str, file_path: str, filename: str,
-                          chunk_size: int = None, chunk_overlap: int = None):
+                          chunk_size: int = None, chunk_overlap: int = None,
+                          redis_key: str = None):
     import uuid
     from app.core.database import SessionLocal
     from app.services.parser import document_parser
@@ -74,14 +91,41 @@ def process_document_task(self, doc_id_str: str, file_path: str, filename: str,
 
     doc_id = uuid.UUID(doc_id_str)
     
+    from app.core.logging import logger
+    from app.services import doc_store
+
+    # Step 0: Take the document out of Redis. GET+DEL is one atomic step, so
+    # the moment the worker has the bytes the Redis copy is already gone.
+    source_path = file_path
+    temp_path = None
+    if redis_key:
+        try:
+            data = doc_store.take_document(redis_key)
+            if data is not None:
+                temp_path = doc_store.write_temp_file(data, filename)
+                source_path = temp_path
+                logger.info(f"Worker took document {doc_id_str} from Redis "
+                            f"({len(data)} bytes); key {redis_key} deleted.")
+            else:
+                logger.warning(f"Redis key {redis_key} missing (expired or already taken); "
+                               f"falling back to {file_path}.")
+        except Exception as e:
+            logger.warning(f"Could not read {redis_key} from Redis ({e}); falling back to {file_path}.")
+            # Make sure nothing is left behind even if the read failed midway.
+            doc_store.discard_document(redis_key)
+
     async def _do_work():
         # Recreate the connection pool to discard inherited connections from the parent process
         from app.core.database import engine
         engine.pool = engine.pool.recreate()
         
         try:
+            if not source_path or not os.path.exists(source_path):
+                raise FileNotFoundError(
+                    "Document bytes were not found in Redis and the source file is not on this worker's disk."
+                )
             # Step 1: Parse the file first without keeping a DB connection open
-            parsed_pages = await document_parser.parse_file(file_path, filename)
+            parsed_pages = await document_parser.parse_file(source_path, filename)
         except Exception as e:
             # If parsing fails, open DB session briefly to mark as failed
             async with SessionLocal() as db:
@@ -114,4 +158,12 @@ def process_document_task(self, doc_id_str: str, file_path: str, filename: str,
                     await db.commit()
                 raise e
 
-    run_async(_do_work)
+    try:
+        run_async(_do_work)
+    finally:
+        # The temp copy only existed for the parser; never leave it on disk.
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
