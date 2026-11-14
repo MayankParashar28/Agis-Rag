@@ -555,7 +555,8 @@ class RagasEvaluator:
             context_precision=scores["context_precision"],
             context_recall=scores["context_recall"],
             answer_relevancy=scores["answer_relevancy"],
-            method=method
+            method=method,
+            kind="ragas",
         )
         db.add(eval_record)
         await db.commit()

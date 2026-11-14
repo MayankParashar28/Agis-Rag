@@ -39,7 +39,7 @@ def stubs(monkeypatch):
             return [{"content": "x", "page_number": 1}]
 
     class Indexer:
-        async def index_document(self, db, doc_id, pages, cs, co):
+        async def index_document(self, db, doc_id, pages, cs, co, **kw):
             events.append(("indexed", cs, co))
 
     class Q:

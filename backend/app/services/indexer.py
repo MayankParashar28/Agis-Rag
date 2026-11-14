@@ -1,7 +1,7 @@
 import re
 import uuid
 import time
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,8 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.models.knowledge import Document, DocumentChunk
 from app.services.models import get_embedding_model
+from app.services.chunking import split_markdown, split_text_recursive
+from app.services.summarizer import context_prefix
 
 QDRANT_BATCH = 64   # vectors per upsert request
 DB_BATCH = 200      # chunk rows per flush
@@ -105,7 +107,11 @@ class DocumentIndexer:
         collection_name = self.ensure_collection(kb_id)
         logger.info(f"Rebuilding {collection_name} from {len(rows)} Postgres chunks...")
 
-        texts = [chunk.content for chunk, _ in rows]
+        def _embed_input(chunk, doc):
+            if not settings.CONTEXTUAL_EMBEDDINGS:
+                return chunk.content
+            return context_prefix(doc.filename, (doc.meta_info or {}).get("summary"), chunk.section) + chunk.content
+        texts = [_embed_input(chunk, doc) for chunk, doc in rows]
         vectors = await asyncio.to_thread(
             self.embed_model.encode, texts, normalize_embeddings=True
         )
@@ -128,6 +134,8 @@ class DocumentIndexer:
                     "page_number": chunk.page_number,
                     "filename": doc.filename,
                     "source": doc.filename,
+                    "section": chunk.section,
+                    "kind": chunk.kind,
                 },
             ))
 
@@ -141,71 +149,8 @@ class DocumentIndexer:
         return len(points)
 
     def split_text_recursive(self, text: str, chunk_size: int = 1000, chunk_overlap: int = 200) -> List[str]:
-        """
-        Splits text recursively using delimiters (paragraphs, sentences, words).
-        """
-        if len(text) <= chunk_size:
-            return [text]
-
-        delimiters = ["\n\n", "\n", ". ", " ", ""]
-        chunks = []
-        
-        # Helper to recursively split text blocks
-        def recursive_split(text_block: str, separator_idx: int) -> List[str]:
-            if len(text_block) <= chunk_size:
-                return [text_block]
-            
-            if separator_idx >= len(delimiters):
-                # Hard cut if we ran out of delimiters
-                return [text_block[i:i+chunk_size] for i in range(0, len(text_block), chunk_size)]
-            
-            separator = delimiters[separator_idx]
-            splits = text_block.split(separator) if separator else list(text_block)
-            
-            result = []
-            current_chunk = ""
-            
-            for j, part in enumerate(splits):
-                # Put the separator back between parts only - appending it to
-                # the last part added text that was never in the document.
-                is_last = j == len(splits) - 1
-                part_str = part + (separator if separator and not is_last else "")
-                
-                if len(current_chunk) + len(part_str) <= chunk_size:
-                    current_chunk += part_str
-                else:
-                    if current_chunk:
-                        result.append(current_chunk)
-                    
-                    # If the part itself is bigger than chunk_size, split it with next separator
-                    if len(part_str) > chunk_size:
-                        sub_splits = recursive_split(part_str, separator_idx + 1)
-                        result.extend(sub_splits)
-                        current_chunk = ""
-                    else:
-                        current_chunk = part_str
-                        
-            if current_chunk:
-                result.append(current_chunk)
-                
-            return result
-
-        raw_chunks = recursive_split(text, 0)
-        
-        # Apply overlapping
-        overlapped_chunks = []
-        for i, chunk in enumerate(raw_chunks):
-            # chunk_overlap 0 must mean no overlap: prev[-0:] is the WHOLE
-            # previous chunk, which used to double every chunk.
-            if i == 0 or chunk_overlap <= 0:
-                overlapped_chunks.append(chunk)
-            else:
-                # Add overlap from previous chunk if possible
-                prev_chunk = raw_chunks[i-1]
-                overlap_text = prev_chunk[-chunk_overlap:] if len(prev_chunk) >= chunk_overlap else prev_chunk
-                overlapped_chunks.append(overlap_text + chunk)
-                
-        return overlapped_chunks
+        """Plain character-budget splitter (kept for callers and tests)."""
+        return split_text_recursive(text, chunk_size, chunk_overlap)
 
     async def index_document(
         self, 
@@ -215,6 +160,7 @@ class DocumentIndexer:
         chunk_size: int = 1000,
         chunk_overlap: int = 200,
         report_progress: bool = True,
+        doc_summary: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Processes parsed pages, chunks them, generates embeddings, and indexes in Qdrant & PostgreSQL.
@@ -251,22 +197,31 @@ class DocumentIndexer:
         # Collect all chunk texts across all pages to batch embed them
         _report("chunking", msg=f"{len(parsed_pages)} page(s) read")
         all_chunks_info = []
+        summary_text = (doc_summary or {}).get("summary") if doc_summary else None
         for page in parsed_pages:
             content = clean_text(page.get("content") or "")
             page_num = page["page_number"]
             if not content.strip():
                 continue  # image-only / blank page
-            chunks_text = self.split_text_recursive(content, chunk_size, chunk_overlap)
-            for idx, text in enumerate(chunks_text):
-                if not text.strip():
+            # Structure-aware: sections stay together, tables stay whole.
+            for ch in split_markdown(content, chunk_size, chunk_overlap):
+                if not ch.text.strip():
                     continue
                 all_chunks_info.append({
-                    "text": text,
-                    "page_number": page_num
+                    "text": ch.text,
+                    "page_number": page_num,
+                    "section": ch.section,
+                    "kind": ch.kind,
                 })
                 
-        # Batch embed all chunks
-        all_texts = [c["text"] for c in all_chunks_info]
+        # Batch embed all chunks. Contextual retrieval: each chunk is embedded
+        # with the document name, its summary and its section path in front,
+        # so the vector carries what the chunk is *about*, not only what it
+        # says. The stored content stays the raw chunk.
+        if settings.CONTEXTUAL_EMBEDDINGS:
+            all_texts = [context_prefix(filename, summary_text, c["section"]) + c["text"] for c in all_chunks_info]
+        else:
+            all_texts = [c["text"] for c in all_chunks_info]
         if not all_texts:
             raise ValueError(
                 "No readable text was found in this document. If it is a scanned PDF, "
@@ -309,7 +264,9 @@ class DocumentIndexer:
                     content=chunk_info["text"],
                     page_number=chunk_info["page_number"],
                     chunk_index=total_chunks,
-                    qdrant_point_id=qdrant_point_id
+                    qdrant_point_id=qdrant_point_id,
+                    section=chunk_info.get("section"),
+                    kind=chunk_info.get("kind"),
                 )
                 db_chunks.append(db_chunk)
                 
@@ -325,7 +282,9 @@ class DocumentIndexer:
                             "content": chunk_info["text"],
                             "page_number": chunk_info["page_number"],
                             "filename": filename,
-                            "source": filename
+                            "source": filename,
+                            "section": chunk_info.get("section"),
+                            "kind": chunk_info.get("kind"),
                         }
                     )
                 )
@@ -356,8 +315,13 @@ class DocumentIndexer:
             doc.meta_info = {
                 **(doc.meta_info or {}),
                 "total_chunks": total_chunks,
+                "table_chunks": sum(1 for c in all_chunks_info if c.get("kind") == "table"),
+                "sections": len({c.get("section") for c in all_chunks_info if c.get("section")}),
                 "embedding_model": settings.EMBEDDING_MODEL,
-                "last_indexed_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                "contextual_embeddings": bool(settings.CONTEXTUAL_EMBEDDINGS),
+                "last_indexed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                **({"summary": doc_summary.get("summary"), "keywords": doc_summary.get("keywords"),
+                    "summary_method": doc_summary.get("method")} if doc_summary else {}),
             }
             doc.meta_info.pop("error_msg", None)
             await db.commit()

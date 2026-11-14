@@ -46,3 +46,6 @@ class ChatQuery(BaseModel):
     query: str
     web_search_enabled: Optional[bool] = False
     document_ids: Optional[List[uuid.UUID]] = None
+    # "quick" (2-3 sentences), "detailed" (default) or "compare" (side-by-side
+    # across the selected documents; needs at least two).
+    mode: Optional[str] = "detailed"

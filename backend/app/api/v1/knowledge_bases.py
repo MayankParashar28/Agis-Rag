@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.core.database import get_db
+from app.services import audit
 from app.api.v1.auth import get_current_active_user
 from app.models.auth import User
 from app.models.knowledge import KnowledgeBase, Document, DocumentChunk
@@ -39,6 +40,7 @@ async def create_knowledge_base(
     db.add(db_obj)
     await db.commit()
     await db.refresh(db_obj)
+    await audit.record(db, current_user, "kb.create", "knowledge_base", db_obj.id, {"name": db_obj.name})
     return db_obj
 
 
@@ -62,8 +64,10 @@ async def delete_knowledge_base(
         )
     
     # Delete from DB (associated documents and chunks are deleted cascade)
+    name = kb.name
     await db.delete(kb)
     await db.commit()
+    await audit.record(db, current_user, "kb.delete", "knowledge_base", kb_id, {"name": name})
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

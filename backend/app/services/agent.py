@@ -30,6 +30,7 @@ class AgentState(TypedDict):
     revised_query: str
     latency_breakdown: Dict[str, float]
     document_ids: Optional[List[uuid.UUID]]
+    mode: Optional[str]
 
 
 # --- NODE 1: Classify Query ---
@@ -69,14 +70,54 @@ async def retrieve_context_node(state: AgentState) -> Dict[str, Any]:
     
     retrieved_chunks = []
     stage_timings: Dict[str, float] = {}
+    mode = state.get("mode") or "detailed"
+    sub_questions: List[str] = [query_to_search]
+    extra_usage = None
 
-    # 1. Search Knowledge Base (Hybrid Search)
-    kb_chunks = await retrieval_pipeline.search_hybrid(
-        db, kb_id, query_to_search, doc_ids,
-        top_k=settings.RETRIEVAL_TOP_K, timings=stage_timings
-    )
-    logger.info(f"Retrieved {len(kb_chunks)} chunks from KB.")
-    retrieved_chunks.extend(kb_chunks)
+    def _dedupe(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        seen, out = set(), []
+        for c in chunks:
+            key = c.get("chunk_id") or c.get("content")
+            if key not in seen:
+                seen.add(key)
+                out.append(c)
+        return out
+
+    if mode == "compare" and doc_ids and len(doc_ids) >= 2:
+        # Compare: retrieve for each document separately so every document
+        # gets a fair share of the context, and tag the chunks by document.
+        import asyncio as _asyncio
+        per_doc = max(4, settings.RETRIEVAL_TOP_K // len(doc_ids))
+        results = await _asyncio.gather(*[
+            retrieval_pipeline.search_hybrid(db, kb_id, query_to_search, [d], top_k=per_doc, timings=stage_timings)
+            for d in doc_ids
+        ])
+        for d, chunks in zip(doc_ids, results):
+            for c in chunks:
+                c["compare_doc"] = str(d)
+            retrieved_chunks.extend(chunks)
+        logger.info(f"Compare mode: retrieved {len(retrieved_chunks)} chunks across {len(doc_ids)} documents.")
+    else:
+        # 1. Search Knowledge Base (Hybrid Search), with query decomposition:
+        # a compound question is also searched as its parts, and the
+        # candidates are merged before reranking against the full question.
+        if settings.QUERY_DECOMPOSITION and state.get("decompose", True):
+            from app.services.decompose import decompose
+            try:
+                sub_questions, extra_usage = await decompose(query_to_search)
+            except Exception as e:
+                logger.warning(f"Query decomposition skipped: {e}")
+                sub_questions = [query_to_search]
+        queries = [query_to_search] + [q for q in sub_questions if q.strip().lower() != query_to_search.strip().lower()]
+        import asyncio as _asyncio
+        results = await _asyncio.gather(*[
+            retrieval_pipeline.search_hybrid(db, kb_id, q, doc_ids, top_k=settings.RETRIEVAL_TOP_K, timings=stage_timings)
+            for q in queries
+        ])
+        for chunks in results:
+            retrieved_chunks.extend(chunks)
+        retrieved_chunks = _dedupe(retrieved_chunks)
+        logger.info(f"Retrieved {len(retrieved_chunks)} chunks from KB for {len(queries)} query variant(s).")
     
     # 2. Search Web if needed
     if needs_web:
@@ -95,7 +136,9 @@ async def retrieve_context_node(state: AgentState) -> Dict[str, Any]:
 
     return {
         "retrieved_chunks": retrieved_chunks,
-        "latency_breakdown": latencies
+        "latency_breakdown": latencies,
+        "sub_questions": sub_questions if len(sub_questions) > 1 else [],
+        "helper_usage": extra_usage,
     }
 
 
@@ -129,7 +172,21 @@ async def rerank_context_node(state: AgentState) -> Dict[str, Any]:
         scored.append(c_copy)
         
     scored.sort(key=lambda x: x["rerank_score"], reverse=True)
-    top_5 = scored[:settings.RERANK_TOP_N]
+    mode = state.get("mode") or "detailed"
+    if mode == "compare" and any(c.get("compare_doc") for c in scored):
+        # Keep the best few chunks of EVERY compared document.
+        per_doc = 4
+        counts: Dict[str, int] = {}
+        top_5 = []
+        for c in scored:
+            key = c.get("compare_doc", "")
+            if counts.get(key, 0) < per_doc:
+                counts[key] = counts.get(key, 0) + 1
+                top_5.append(c)
+    elif mode == "quick":
+        top_5 = scored[:min(3, settings.RERANK_TOP_N)]
+    else:
+        top_5 = scored[:settings.RERANK_TOP_N]
     
     # Rerank score is already a probability (0-1), use it directly
     for c in top_5:

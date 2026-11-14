@@ -59,6 +59,11 @@ class DocumentChunk(Base):
     page_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     chunk_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     qdrant_point_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Heading path the chunk sits under ("Returns > Exceptions"), from
+    # structure-aware chunking. Null for unstructured text.
+    section: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # "text" or "table"
+    kind: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
