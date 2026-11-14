@@ -6,7 +6,7 @@ import random
 import re
 from typing import Dict, Any, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, case
 from fastapi import HTTPException
 
 from app.core.config import settings
@@ -367,7 +367,8 @@ class RagasEvaluator:
             select(Message.content, Message.sender, Message.citations, Message.conversation_id)
             .join(Conversation, Conversation.id == Message.conversation_id)
             .where(Conversation.kb_id == kb_id)
-            .order_by(Message.conversation_id, Message.created_at.asc())
+            .order_by(Message.conversation_id, Message.created_at.asc(),
+                      case((Message.sender == "user", 0), else_=1))
         )
         result = await db.execute(query)
         rows = result.all()

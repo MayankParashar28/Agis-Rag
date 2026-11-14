@@ -366,6 +366,37 @@ function ChatPageContent() {
     let finalCitations: Citation[] = [];
     let finalMetadata: any = null;
 
+    let finalizedId: string | null = null;
+    // Fields that come from the server's metadata/confidence events.
+    const metaFields = (meta: any): Partial<Message> => ({
+      latency: meta?.latency,
+      // undefined, not a guess: with no score from the server the UI hides it.
+      retrieval_score: typeof meta?.confidence_score === "number" ? meta.confidence_score / 100 : undefined,
+      confidence_method: meta?.confidence_method,
+      cached: Boolean(meta?.cached),
+      usage: meta?.usage,
+      query_log_id: meta?.query_log_id,
+    });
+    const finalize = () => {
+      if (finalizedId) return;
+      finalizedId = `temp-assistant-${++tempIdRef.current}`;
+      const assistantMsg: Message = {
+        id: finalizedId,
+        sender: "assistant",
+        content: accumulatedText,
+        citations: finalCitations,
+        mode,
+        created_at: new Date().toISOString(),
+        ...metaFields(finalMetadata),
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
+      setIsStreaming(false);
+      setAgentStatus(null);
+      setStreamingText("");
+      setStreamingCitations([]);
+      setSubQuestions([]);
+    };
+
     const cancelStream = api.streamMessage(
       {
         conversation_id: convId,
@@ -376,7 +407,9 @@ function ChatPageContent() {
       },
       (event, data) => {
         if (event === "status") {
-          setAgentStatus(data.message);
+          // Once the answer is on screen, later status lines would only
+          // make it look unfinished.
+          if (!finalizedId) setAgentStatus(data.message);
         } else if (event === "sub_questions") {
           setSubQuestions(data.questions || []);
         } else if (event === "suggestions") {
@@ -390,48 +423,29 @@ function ChatPageContent() {
           setStreamingText(accumulatedText);
         } else if (event === "metadata") {
           finalCitations = data.citations || [];
-          setStreamingCitations(finalCitations);
           finalMetadata = data;
+          // The answer text and its sources are complete here. Show it as a
+          // finished message and unlock the input now; the judged confidence,
+          // cost and follow-ups arrive a few seconds later and are filled in
+          // on this same message.
+          finalize();
         } else if (event === "confidence") {
-          // The judged score arrives after the metadata packet so citations do
-          // not wait on the judge. It replaces the provisional lexical figure.
-          setAgentStatus("Auditing faithfulness...");
           finalMetadata = {
             ...(finalMetadata || {}),
             confidence_score: data.confidence_score,
             confidence_method: data.confidence_method,
             usage: data.usage,
           };
+          if (finalizedId) {
+            const id = finalizedId;
+            setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...metaFields(finalMetadata) } : m)));
+          }
         }
       },
       () => {
-        // Complete
-        setIsStreaming(false);
-        setAgentStatus(null);
-        setStreamingText("");
-        
-        // Add final assistant message locally
-        const tempAssistantMsg: Message = {
-          id: `temp-assistant-${++tempIdRef.current}`,
-          sender: "assistant",
-          content: accumulatedText,
-          citations: finalCitations,
-          latency: finalMetadata?.latency,
-          // undefined, not 0.8: with no score from the server there is nothing
-          // to report, and the UI hides the field rather than showing a guess.
-          retrieval_score:
-            typeof finalMetadata?.confidence_score === "number"
-              ? finalMetadata.confidence_score / 100
-              : undefined,
-          confidence_method: finalMetadata?.confidence_method,
-          cached: Boolean(finalMetadata?.cached),
-          mode,
-          usage: finalMetadata?.usage,
-          query_log_id: finalMetadata?.query_log_id,
-          created_at: new Date().toISOString()
-        };
-        setMessages((prev) => [...prev, tempAssistantMsg]);
-        
+        // Stream closed. Normally the message was already finalized on the
+        // metadata event; this covers streams that ended without one.
+        finalize();
         // Reload conversations to refresh timestamps/ordering
         api.listConversations().then(setConversations);
       },
