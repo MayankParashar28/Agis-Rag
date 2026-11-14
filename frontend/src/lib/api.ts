@@ -70,6 +70,66 @@ export interface ChunkContext {
   };
 }
 
+export type AnswerMode = "quick" | "detailed" | "compare";
+
+export interface GoldenQuestion {
+  id: string;
+  kb_id: string;
+  question: string;
+  expected_answer: string;
+  created_at: string | null;
+}
+
+export interface GoldenResult {
+  question_id: string;
+  question: string;
+  expected_answer: string;
+  answer: string;
+  correctness: number;
+  faithfulness: number;
+  context_recall: number;
+  score: number;
+  passed: boolean;
+  reason?: string | null;
+  sources: Array<{ source_doc: string | null; page: number | null; chunk_id?: string | null }>;
+  latency: number;
+}
+
+export interface GoldenRun {
+  id: string;
+  created_at: string;
+  method: string;
+  overall_score: number | null;
+  passed: number;
+  total: number;
+  pass: boolean;
+  threshold: number;
+  faithfulness?: number | null;
+  correctness?: number | null;
+  context_recall?: number | null;
+  results: GoldenResult[];
+  usage?: { prompt_tokens: number; completion_tokens: number; cost_usd: number; model: string | null };
+}
+
+export interface CostReport {
+  days: number;
+  totals: { queries: number; cached: number; prompt_tokens: number; completion_tokens: number; cost_usd: number; avg_cost_per_query_usd: number };
+  per_day: Array<{ day: string; queries: number; prompt_tokens: number; completion_tokens: number; cost_usd: number; cached: number }>;
+  per_kb: Array<{ kb_id: string | null; kb_name: string; queries: number; prompt_tokens: number; completion_tokens: number; cost_usd: number; avg_latency: number }>;
+  per_model: Array<{ model: string; queries: number; prompt_tokens: number; completion_tokens: number; cost_usd: number }>;
+  note: string;
+}
+
+export interface AuditEntry {
+  id: string;
+  user_email: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  detail: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface Message {
   id: string;
   sender: "user" | "assistant";
@@ -81,6 +141,8 @@ export interface Message {
   confidence_method?: string;
   // True when the answer came from the semantic answer cache.
   cached?: boolean;
+  mode?: AnswerMode;
+  usage?: { prompt_tokens: number; completion_tokens: number; model: string | null; cost_usd: number };
   created_at: string;
   query_log_id?: string;
   rating?: number;
@@ -458,10 +520,48 @@ export const api = {
   // Evaluation
   runEvaluation: (kbId: string) => request<EvaluationResult>("/evaluation/run", { method: "POST", body: JSON.stringify({ kb_id: kbId }) }),
   getEvaluationHistory: (kbId: string) => request<EvaluationResult[]>(`/evaluation/results/${kbId}`),
+
+  // Golden question sets
+  listGoldenQuestions: (kbId: string) => request<GoldenQuestion[]>(`/evaluation/golden/${kbId}`, {}, { noCache: true }),
+  addGoldenQuestion: (kbId: string, question: string, expected_answer: string) =>
+    request<GoldenQuestion>("/evaluation/golden", { method: "POST", body: JSON.stringify({ kb_id: kbId, question, expected_answer }) }),
+  deleteGoldenQuestion: (id: string) => request<void>(`/evaluation/golden/${id}`, { method: "DELETE" }),
+  suggestGoldenQuestions: (kbId: string, n = 5) =>
+    request<{ items: Array<{ question: string; expected_answer: string }> }>("/evaluation/golden/suggest", { method: "POST", body: JSON.stringify({ kb_id: kbId, n }) }),
+  runGolden: (kbId: string, threshold?: number) =>
+    request<GoldenRun & { kb_id: string }>("/evaluation/golden/run", { method: "POST", body: JSON.stringify({ kb_id: kbId, threshold }) }),
+  goldenRunHistory: (kbId: string) => request<GoldenRun[]>(`/evaluation/golden/${kbId}/runs`, {}, { noCache: true }),
+
+  // Costs and audit (admin)
+  getCosts: (days = 30) => request<CostReport>(`/analytics/costs?days=${days}`),
+  getAuditLog: (params: { limit?: number; offset?: number; action?: string; user?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.limit) q.set("limit", String(params.limit));
+    if (params.offset) q.set("offset", String(params.offset));
+    if (params.action) q.set("action", params.action);
+    if (params.user) q.set("user", params.user);
+    return request<{ total: number; actions: string[]; items: AuditEntry[] }>(`/analytics/audit?${q.toString()}`, {}, { noCache: true });
+  },
+
+  // Export a conversation as Markdown (downloads the file)
+  exportConversation: async (convId: string, title: string) => {
+    const token = authStorage.getToken();
+    const res = await fetch(`${API_BASE_URL}/chat/conversations/${convId}/export`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (!res.ok) throw new Error("Export failed.");
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${(title || "conversation").replace(/[^\w\- ]+/g, "").trim() || "conversation"}.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  },
   
   // Streaming event listener utility
   streamMessage: (
-    queryData: { conversation_id: string; query: string; web_search_enabled: boolean; document_ids?: string[] },
+    queryData: { conversation_id: string; query: string; web_search_enabled: boolean; document_ids?: string[]; mode?: AnswerMode },
     onEvent: (event: string, data: any) => void,
     onComplete: () => void,
     onError: (error: Error) => void

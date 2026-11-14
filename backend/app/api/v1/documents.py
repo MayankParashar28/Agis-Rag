@@ -22,7 +22,8 @@ from app.models.knowledge import KnowledgeBase, Document, DocumentChunk
 from app.schemas.knowledge import DocumentResponse, DocumentChunkResponse
 from app.services.parser import document_parser
 from app.services.indexer import document_indexer
-from app.services import doc_store, progress
+from app.services import doc_store, progress, audit
+from app.services import storage as object_storage
 from app.services.url_import import fetch_url, safe_filename, UrlImportError
 from app.core.logging import logger
 from app.core.config import settings
@@ -36,19 +37,27 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 async def _dispatch_processing(doc_id: str, file_path: str, filename: str,
-                               chunk_size: int, chunk_overlap: int) -> None:
+                               chunk_size: int, chunk_overlap: int,
+                               storage_key: str | None = None) -> None:
     """Stage the document in Redis and queue the Celery job that consumes it.
 
     The worker reads the bytes from Redis (so it does not need to share a disk
-    with the API) and deletes the key in the same atomic step. If Redis cannot
-    take the file, the job still carries the file path as a fallback.
+    with the API) and deletes the key in the same atomic step. Files above
+    DOC_HANDOVER_MAX_MB skip Redis (hosted plans cap request size); the worker
+    then reads the file from disk or fetches it from object storage.
     """
-    redis_key = await asyncio.to_thread(doc_store.stage_document, doc_id, file_path)
+    redis_key = None
+    try:
+        small_enough = os.path.getsize(file_path) <= settings.DOC_HANDOVER_MAX_MB * 1024 * 1024
+    except OSError:
+        small_enough = False
+    if small_enough:
+        redis_key = await asyncio.to_thread(doc_store.stage_document, doc_id, file_path)
     await asyncio.to_thread(progress.report, doc_id, "queued")
     try:
         process_document_task.apply_async(
             args=[doc_id, file_path, filename, chunk_size, chunk_overlap],
-            kwargs={"redis_key": redis_key},
+            kwargs={"redis_key": redis_key, "storage_key": storage_key},
             queue=queue_name,
         )
     except Exception:
@@ -89,7 +98,15 @@ async def _get_owned_kb(db: AsyncSession, kb_id: uuid.UUID, user: User) -> Knowl
 
 async def _create_and_dispatch(db: AsyncSession, kb_id: uuid.UUID, doc_id: uuid.UUID, dest_path: str,
                                filename: str, ext: str, sha256: str, chunk_size: int,
-                               chunk_overlap: int, extra_meta: dict | None = None) -> Document:
+                               chunk_overlap: int, extra_meta: dict | None = None, user: User | None = None) -> Document:
+    # Keep the original in object storage (or the local uploads dir) so
+    # re-indexing and "open original" survive redeploys and worker moves.
+    key = object_storage.storage_key(doc_id, ext)
+    try:
+        await asyncio.to_thread(object_storage.get_storage().put_file, key, dest_path)
+    except Exception as e:
+        logger.error(f"Could not store original for {doc_id} in object storage: {e}")
+        key = None
     db_doc = Document(
         id=doc_id,
         kb_id=kb_id,
@@ -99,6 +116,8 @@ async def _create_and_dispatch(db: AsyncSession, kb_id: uuid.UUID, doc_id: uuid.
         status="processing",
         meta_info={
             "local_path": dest_path,
+            "storage_key": key,
+            "storage_backend": object_storage.get_storage().backend if key else None,
             "original_filename": filename,
             "chunk_size": chunk_size,
             "chunk_overlap": chunk_overlap,
@@ -112,8 +131,91 @@ async def _create_and_dispatch(db: AsyncSession, kb_id: uuid.UUID, doc_id: uuid.
     await db.refresh(db_doc)
     # Stage the file in Redis and hand it to the Celery worker. The worker
     # deletes the Redis copy as soon as it takes it.
-    await _dispatch_processing(str(db_doc.id), dest_path, filename, chunk_size, chunk_overlap)
+    await _dispatch_processing(str(db_doc.id), dest_path, filename, chunk_size, chunk_overlap, storage_key=key)
+    await audit.record(db, user, "document.upload" if not (extra_meta or {}).get("source_url") else "document.import_url",
+                       "document", db_doc.id, {"filename": filename, "kb_id": str(kb_id), "size": db_doc.file_size,
+                                               **({"source_url": extra_meta["source_url"]} if (extra_meta or {}).get("source_url") else {})})
     return db_doc
+
+
+
+def _original_available(doc: Document) -> bool:
+    meta = doc.meta_info or {}
+    local_path = meta.get("local_path")
+    if local_path and os.path.exists(local_path):
+        return True
+    key = meta.get("storage_key")
+    return bool(key) and object_storage.get_storage().exists(key)
+
+
+async def _remove_original(doc: Document) -> None:
+    meta = doc.meta_info or {}
+    local_path = meta.get("local_path")
+    if local_path and os.path.exists(local_path):
+        try:
+            os.remove(local_path)
+        except Exception as e:
+            logger.error(f"Error removing local file {local_path}: {str(e)}")
+    key = meta.get("storage_key")
+    if key:
+        await asyncio.to_thread(object_storage.get_storage().delete, key)
+
+
+async def _source_path_for_reindex(doc: Document) -> str:
+    """A readable path to the original, fetching it from object storage if the
+    local copy is gone (e.g. after a redeploy)."""
+    meta = doc.meta_info or {}
+    local_path = meta.get("local_path")
+    if local_path and os.path.exists(local_path):
+        return local_path
+    key = meta.get("storage_key")
+    if key:
+        ext = os.path.splitext(doc.filename)[1] or ".bin"
+        fetched = await object_storage.fetch_to_temp(key, ext)
+        if fetched:
+            # Restore the local copy so later re-indexes are cheap.
+            dest = os.path.join(UPLOAD_DIR, f"{doc.id}{ext.lower()}")
+            try:
+                os.replace(fetched, dest)
+                doc.meta_info = {**meta, "local_path": dest}
+                return dest
+            except OSError:
+                return fetched
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="The original file is no longer stored anywhere. Please upload it again.",
+    )
+
+
+async def _reset_and_reindex(db: AsyncSession, doc: Document, user: User) -> None:
+    """Clear a document's chunks and vectors, then queue it for indexing again."""
+    source = await _source_path_for_reindex(doc)
+    from sqlalchemy import delete as sa_delete
+    await db.execute(sa_delete(DocumentChunk).where(DocumentChunk.doc_id == doc.id))
+    collection_name = f"kb_{str(doc.kb_id).replace('-', '_')}"
+    try:
+        from qdrant_client.http import models as qmodels
+        document_indexer.qclient.delete(
+            collection_name=collection_name,
+            points_selector=qmodels.FilterSelector(filter=qmodels.Filter(must=[
+                qmodels.FieldCondition(key="doc_id", match=qmodels.MatchValue(value=str(doc.id)))
+            ])),
+        )
+    except Exception as e:
+        logger.error(f"Failed to clear Qdrant during reindex: {str(e)}")
+    doc.status = "processing"
+    meta = dict(doc.meta_info or {})
+    meta.pop("error_msg", None)
+    doc.meta_info = meta
+    await db.commit()
+    await db.refresh(doc)
+    await _dispatch_processing(
+        str(doc.id), source, doc.filename,
+        meta.get("chunk_size", settings.DEFAULT_CHUNK_SIZE),
+        meta.get("chunk_overlap", settings.DEFAULT_CHUNK_OVERLAP),
+        storage_key=meta.get("storage_key"),
+    )
+    await audit.record(db, user, "document.reindex", "document", doc.id, {"filename": doc.filename, "kb_id": str(doc.kb_id)})
 
 
 # Background task to parse, chunk, and index the document
@@ -244,7 +346,7 @@ async def upload_document(
 
     # 4. Create the Document record and hand it to the worker.
     return await _create_and_dispatch(
-        db, kb_uuid, doc_id, dest_path, file.filename, ext, sha256, chunk_size, chunk_overlap)
+        db, kb_uuid, doc_id, dest_path, file.filename, ext, sha256, chunk_size, chunk_overlap, user=current_user)
 
 
 class UrlImportRequest(BaseModel):
@@ -282,7 +384,7 @@ async def import_from_url(
     filename = safe_filename(fetched.title, fetched.final_url, fetched.ext)
     return await _create_and_dispatch(
         db, body.kb_id, doc_id, dest_path, filename, fetched.ext, sha256,
-        body.chunk_size, body.chunk_overlap, {"source_url": fetched.final_url})
+        body.chunk_size, body.chunk_overlap, {"source_url": fetched.final_url}, user=current_user)
 
 
 @router.get("/kb/{kb_id}/progress")
@@ -313,17 +415,23 @@ async def download_document_file(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Serve the original file inline, so a citation can open it at its page."""
+    """Serve the original file inline, so a citation can open it at its page.
+    Served from disk when present, otherwise streamed from object storage."""
     doc = await _get_accessible_doc(db, doc_id, current_user)
-    local_path = (doc.meta_info or {}).get("local_path")
-    if not local_path or not os.path.exists(local_path):
-        raise HTTPException(status_code=404, detail="The original file is no longer stored on the server.")
-    media_type = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
+    meta = doc.meta_info or {}
+    local_path = meta.get("local_path")
+    media_type = mimetypes.guess_type(doc.filename)[0] or "application/octet-stream"
     if media_type.startswith("text/"):
         media_type += "; charset=utf-8"
-    return FileResponse(local_path, media_type=media_type, filename=doc.filename,
-                        content_disposition_type="inline",
-                        headers={"Cache-Control": "private, max-age=3600"})
+    headers = {"Cache-Control": "private, max-age=3600",
+               "Content-Disposition": f'inline; filename="{doc.filename}"'}
+    if local_path and os.path.exists(local_path):
+        return FileResponse(local_path, media_type=media_type, headers=headers)
+    key = meta.get("storage_key")
+    if key and await asyncio.to_thread(object_storage.get_storage().exists, key):
+        from fastapi.responses import StreamingResponse
+        return StreamingResponse(object_storage.get_storage().stream(key), media_type=media_type, headers=headers)
+    raise HTTPException(status_code=404, detail="The original file is no longer stored on the server.")
 
 
 @router.get("/chunks/{chunk_id}/context")
@@ -346,7 +454,6 @@ async def chunk_context(
         )
         neighbours = {r[0]: r[1] for r in rows.all()}
     meta = doc.meta_info or {}
-    local_path = meta.get("local_path")
     return {
         "chunk": {"id": str(chunk.id), "content": chunk.content, "page_number": chunk.page_number,
                   "chunk_index": chunk.chunk_index},
@@ -354,7 +461,8 @@ async def chunk_context(
         "after": neighbours.get(chunk.chunk_index + 1) if neighbours else None,
         "document": {"id": str(doc.id), "kb_id": str(doc.kb_id), "filename": doc.filename,
                      "file_type": doc.file_type, "source_url": meta.get("source_url"),
-                     "has_file": bool(local_path and os.path.exists(local_path))},
+                     "has_file": _original_available(doc),
+                     "section": chunk.section},
     }
 
 
@@ -407,17 +515,12 @@ async def delete_document(
             detail="Document not found or access denied."
         )
 
-    # Delete local file if exists
-    local_path = doc.meta_info.get("local_path") if doc.meta_info else None
-    if local_path and os.path.exists(local_path):
-        try:
-            os.remove(local_path)
-        except Exception as e:
-            logger.error(f"Error removing local file {local_path}: {str(e)}")
-
+    await _remove_original(doc)
+    filename, kb_id = doc.filename, doc.kb_id
     # Use indexer to delete from PostgreSQL and Qdrant
     await document_indexer.delete_document(db, doc_id)
     await asyncio.to_thread(progress.clear, str(doc_id))
+    await audit.record(db, current_user, "document.delete", "document", doc_id, {"filename": filename, "kb_id": str(kb_id)})
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -427,72 +530,15 @@ async def reindex_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ) -> Any:
-    # Fetch document and verify ownership
     result = await db.execute(
         select(Document)
         .join(KnowledgeBase, KnowledgeBase.id == Document.kb_id)
-        .where(
-            Document.id == doc_id,
-            KnowledgeBase.user_id == current_user.id
-        )
+        .where(Document.id == doc_id, KnowledgeBase.user_id == current_user.id)
     )
     doc = result.scalar_one_or_none()
     if not doc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document not found or access denied."
-        )
-
-    local_path = doc.meta_info.get("local_path") if doc.meta_info else None
-    if not local_path or not os.path.exists(local_path):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Source document file could not be found locally for reindexing. Please re-upload."
-        )
-
-    # 1. Clear old chunks from PostgreSQL and vectors from Qdrant
-    # We do a partial reset: delete chunks first
-    from sqlalchemy import delete
-    from app.models.knowledge import DocumentChunk
-    await db.execute(delete(DocumentChunk).where(DocumentChunk.doc_id == doc_id))
-    
-    # Delete from Qdrant
-    collection_name = f"kb_{str(doc.kb_id).replace('-', '_')}"
-    try:
-        from qdrant_client.http import models as qmodels
-        document_indexer.qclient.delete(
-            collection_name=collection_name,
-            points_selector=qmodels.FilterSelector(
-                filter=qmodels.Filter(
-                    must=[
-                        qmodels.FieldCondition(
-                            key="doc_id",
-                            match=qmodels.MatchValue(value=str(doc_id))
-                        )
-                    ]
-                )
-            )
-        )
-    except Exception as e:
-        logger.error(f"Failed to clear Qdrant during reindex: {str(e)}")
-
-    # Update document status to processing
-    doc.status = "processing"
-    await db.commit()
-    await db.refresh(doc)
-
-    # Start indexing in background via Celery
-    # Reuse the chunk settings chosen at upload time instead of silently
-    # falling back to the task's 1000/200 defaults.
-    meta = doc.meta_info or {}
-    await _dispatch_processing(
-        str(doc.id),
-        local_path,
-        doc.filename,
-        meta.get("chunk_size", settings.DEFAULT_CHUNK_SIZE),
-        meta.get("chunk_overlap", settings.DEFAULT_CHUNK_OVERLAP),
-    )
-
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found or access denied.")
+    await _reset_and_reindex(db, doc, current_user)
     return doc
 
 
@@ -541,14 +587,11 @@ async def admin_delete_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
         
-    local_path = doc.meta_info.get("local_path") if doc.meta_info else None
-    if local_path and os.path.exists(local_path):
-        try:
-            os.remove(local_path)
-        except Exception as e:
-            logger.error(f"Error removing local file {local_path}: {str(e)}")
-
+    await _remove_original(doc)
+    filename, kb_id = doc.filename, doc.kb_id
     await document_indexer.delete_document(db, doc_id)
+    await asyncio.to_thread(progress.clear, str(doc_id))
+    await audit.record(db, current_user, "document.delete", "document", doc_id, {"filename": filename, "kb_id": str(kb_id), "admin": True})
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -558,61 +601,12 @@ async def admin_reindex_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ) -> Any:
-    """
-    Trigger reindexing for any document globally. Restricted to admin.
-    """
+    """Trigger reindexing for any document globally. Restricted to admin."""
     result = await db.execute(select(Document).where(Document.id == doc_id))
     doc = result.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
-
-    local_path = doc.meta_info.get("local_path") if doc.meta_info else None
-    if not local_path or not os.path.exists(local_path):
-        raise HTTPException(
-            status_code=400,
-            detail="Source document file could not be found locally for reindexing."
-        )
-
-    # Clear old chunks from PostgreSQL
-    from sqlalchemy import delete
-    from app.models.knowledge import DocumentChunk
-    await db.execute(delete(DocumentChunk).where(DocumentChunk.doc_id == doc_id))
-    
-    # Delete from Qdrant
-    collection_name = f"kb_{str(doc.kb_id).replace('-', '_')}"
-    try:
-        from qdrant_client.http import models as qmodels
-        document_indexer.qclient.delete(
-            collection_name=collection_name,
-            points_selector=qmodels.FilterSelector(
-                filter=qmodels.Filter(
-                    must=[
-                        qmodels.FieldCondition(
-                            key="doc_id",
-                            match=qmodels.MatchValue(value=str(doc_id))
-                        )
-                    ]
-                )
-            )
-        )
-    except Exception as e:
-        logger.error(f"Failed to clear Qdrant during reindex: {str(e)}")
-
-    doc.status = "processing"
-    await db.commit()
-    await db.refresh(doc)
-
-    # Reuse the chunk settings chosen at upload time instead of silently
-    # falling back to the task's 1000/200 defaults.
-    meta = doc.meta_info or {}
-    await _dispatch_processing(
-        str(doc.id),
-        local_path,
-        doc.filename,
-        meta.get("chunk_size", settings.DEFAULT_CHUNK_SIZE),
-        meta.get("chunk_overlap", settings.DEFAULT_CHUNK_OVERLAP),
-    )
-
+    await _reset_and_reindex(db, doc, current_user)
     return {"status": "success", "message": "Reindexing scheduled successfully."}
 
 

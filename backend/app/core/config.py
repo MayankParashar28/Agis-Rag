@@ -134,6 +134,31 @@ class Settings(BaseSettings):
     ANSWER_CACHE_TTL_SECONDS: int = 86400
     ANSWER_CACHE_MAX_ENTRIES: int = 50
 
+    # --- Object storage for original files ----------------------------------
+    # "local" keeps uploads on this server's disk (lost on hosts that wipe the
+    # disk on deploy). "s3" works with AWS S3, Cloudflare R2, Supabase Storage
+    # or MinIO and survives redeploys.
+    STORAGE_BACKEND: str = "local"
+    S3_BUCKET: Optional[str] = None
+    S3_ENDPOINT_URL: Optional[str] = None
+    S3_ACCESS_KEY_ID: Optional[str] = None
+    S3_SECRET_ACCESS_KEY: Optional[str] = None
+    S3_REGION: Optional[str] = None
+    # Files larger than this skip the Redis hand-off (hosted Redis plans cap
+    # request size); the worker fetches them from storage / disk instead.
+    DOC_HANDOVER_MAX_MB: int = 9
+
+    # --- LLM cost tracking --------------------------------------------------
+    # JSON map of model -> [usd per 1M input tokens, usd per 1M output tokens]
+    LLM_PRICING_JSON: Optional[str] = None
+
+    # --- Retrieval features -------------------------------------------------
+    QUERY_DECOMPOSITION: bool = True
+    FOLLOW_UP_SUGGESTIONS: bool = True
+    CONTEXTUAL_EMBEDDINGS: bool = True
+    # Golden question runs fail (exit non-zero in CI) below this score (0-1).
+    GOLDEN_PASS_THRESHOLD: float = 0.7
+
     # --- Rate limiting ------------------------------------------------------
     RATE_LIMIT: str = "100/minute"
 

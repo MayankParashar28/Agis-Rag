@@ -121,6 +121,18 @@ This will build the frontend and backend, provision databases, and start all ser
 - **Semantic answer cache**: a near-identical first question reuses a confident earlier answer instantly. Cached answers are invalidated whenever the knowledge base changes.
 - **Prompt-injection guard**: retrieved text is wrapped as untrusted data, and instruction-like phrases ("ignore previous instructions…") are removed before they reach the model.
 
+- **Answer modes**: Quick (2–3 sentences), Detailed, or Compare (a side-by-side table across the documents you select).
+- **Query decomposition**: a compound question is searched as its parts and the candidates are merged before reranking.
+- **Follow-up suggestions**: three questions drafted from the passages that answered you.
+- **Document summaries**: every indexed file gets a summary and keywords, shown on the Documents page and in the chat picker.
+- **Contextual retrieval and structure-aware chunking**: chunks are embedded with the document's summary and section path; Markdown tables stay whole and come back as tables in answers.
+- **Show in PDF**: a citation can render the PDF page in the panel with the passage highlighted.
+- **Export**: a conversation downloads as Markdown with footnoted sources, or opens a print view for PDF.
+- **Cost tracking**: tokens and estimated cost per query, with daily / per-KB / per-model breakdowns on Analytics.
+- **Audit log**: uploads, deletions, re-indexes, exports, knowledge-base and role changes, on an admin page.
+- **Object storage**: originals can live in S3 / R2 / Supabase Storage (`STORAGE_BACKEND=s3`) so they survive redeploys.
+- **Golden question sets**: per knowledge base, with suggested drafts, scored runs, and a nightly GitHub Action (`golden-eval.yml`) that fails when the score drops below `GOLDEN_THRESHOLD`. Set the `AGIS_API_URL`, `AGIS_EMAIL` and `AGIS_PASSWORD` repository secrets to enable it.
+
 ## ✅ Tests and CI
 
 ```bash

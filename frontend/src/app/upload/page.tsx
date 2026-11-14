@@ -303,6 +303,16 @@ function UploadPageContent() {
                             {doc.status === "indexed" && doc.meta_info?.total_chunks != null && ` · ${doc.meta_info.total_chunks} chunks`}
                             {doc.status === "failed" && doc.meta_info?.error_msg && ` · ${doc.meta_info.error_msg}`}
                           </p>
+                          {doc.meta_info?.summary && (
+                            <p className="mt-1 line-clamp-2 text-xs text-muted-foreground/90" title={doc.meta_info.summary}>{doc.meta_info.summary}</p>
+                          )}
+                          {Array.isArray(doc.meta_info?.keywords) && doc.meta_info.keywords.length > 0 && (
+                            <div className="mt-1.5 flex flex-wrap gap-1">
+                              {doc.meta_info.keywords.slice(0, 6).map((k: string) => (
+                                <span key={k} className="rounded-full bg-surface-muted px-2 py-0.5 text-[11px] text-muted-foreground">{k}</span>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </button>
                       <div className="flex items-center gap-3 sm:w-[260px] sm:justify-end">

@@ -10,7 +10,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // No app chrome on the landing, login and registration pages.
-  const isAuthPage = pathname === "/login" || pathname === "/register" || pathname === "/";
+  const isAuthPage = pathname === "/login" || pathname === "/register" || pathname === "/" || pathname.startsWith("/chat/print/");
   if (isAuthPage) {
     return <div className="min-h-screen bg-background">{children}</div>;
   }

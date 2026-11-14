@@ -51,5 +51,7 @@ class DocumentChunkResponse(BaseModel):
     page_number: Optional[int] = None
     chunk_index: Optional[int] = None
     qdrant_point_id: Optional[str] = None
+    section: Optional[str] = None
+    kind: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

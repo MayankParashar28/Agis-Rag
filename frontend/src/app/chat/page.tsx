@@ -31,7 +31,9 @@ import {
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 import CitationViewer from "@/components/chat/CitationViewer";
 import { DocumentPicker, KBPicker } from "@/components/chat/SourcePicker";
-import { api, authStorage, Citation, KnowledgeBase, Conversation, Message, UserNote, DocumentInfo } from "@/lib/api";
+import { api, authStorage, AnswerMode, Citation, KnowledgeBase, Conversation, Message, UserNote, DocumentInfo } from "@/lib/api";
+import { ModeSelector } from "@/components/chat/ModeSelector";
+import { Download, Printer } from "lucide-react";
 
 function ChatPageContent() {
   const router = useRouter();
@@ -56,6 +58,12 @@ function ChatPageContent() {
   const [streamingText, setStreamingText] = useState("");
   const [streamingCitations, setStreamingCitations] = useState<Citation[]>([]);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [mode, setMode] = useState<AnswerMode>("detailed");
+  // Follow-up questions suggested by the server for the latest answer.
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [subQuestions, setSubQuestions] = useState<string[]>([]);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   
   // Diagnostics comparison (pre/post rerank vectors)
   const [retrievalStats, setRetrievalStats] = useState<any>(null);
@@ -340,6 +348,8 @@ function ChatPageContent() {
     setIsStreaming(true);
     setStreamingText("");
     setStreamingCitations([]);
+    setSuggestions([]);
+    setSubQuestions([]);
     setAgentStatus("Planning retrieval...");
     setRetrievalStats(null);
 
@@ -361,11 +371,16 @@ function ChatPageContent() {
         conversation_id: convId,
         query: queryText,
         web_search_enabled: webSearchEnabled,
-        document_ids: selectedDocIds.length > 0 ? selectedDocIds : undefined
+        document_ids: selectedDocIds.length > 0 ? selectedDocIds : undefined,
+        mode,
       },
       (event, data) => {
         if (event === "status") {
           setAgentStatus(data.message);
+        } else if (event === "sub_questions") {
+          setSubQuestions(data.questions || []);
+        } else if (event === "suggestions") {
+          setSuggestions(data.questions || []);
         } else if (event === "retrieval_debug") {
           // Store raw search data before BGE Rerank comparison
           setRetrievalStats(data);
@@ -384,7 +399,8 @@ function ChatPageContent() {
           finalMetadata = {
             ...(finalMetadata || {}),
             confidence_score: data.confidence_score,
-            confidence_method: data.confidence_method
+            confidence_method: data.confidence_method,
+            usage: data.usage,
           };
         }
       },
@@ -409,6 +425,8 @@ function ChatPageContent() {
               : undefined,
           confidence_method: finalMetadata?.confidence_method,
           cached: Boolean(finalMetadata?.cached),
+          mode,
+          usage: finalMetadata?.usage,
           query_log_id: finalMetadata?.query_log_id,
           created_at: new Date().toISOString()
         };
@@ -482,11 +500,34 @@ function ChatPageContent() {
     };
   }, [activeMainTab, selectedKBId, guideState]);
 
-  const followUps = [
-    "Summarize the key takeaways of the document.",
-    "Show me tables or structured metrics mentioned.",
-    "What are the specific parameters described?"
-  ];
+  const followUps = suggestions.length
+    ? suggestions
+    : [
+        "Summarize the key takeaways of the document.",
+        "Show me tables or structured metrics mentioned.",
+        "What are the specific parameters described?",
+      ];
+
+  useEffect(() => {
+    if (!exportOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setExportOpen(false);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [exportOpen]);
+
+  const handleExportMarkdown = async () => {
+    if (!activeConvId) return;
+    setExporting(true);
+    try {
+      const title = conversations.find((c) => c.id === activeConvId)?.title || "conversation";
+      await api.exportConversation(activeConvId, title);
+    } catch {
+      alert("Export failed. Please try again.");
+    } finally {
+      setExporting(false);
+      setExportOpen(false);
+    }
+  };
 
   const renderSidebar = (isMobile: boolean = false) => {
     return (
@@ -669,6 +710,36 @@ function ChatPageContent() {
 
           {/* Right side controls */}
           <div className="flex items-center space-x-2 sm:space-x-2.5 order-2 sm:order-3">
+            <ModeSelector value={mode} onChange={setMode} selectedDocs={selectedDocIds.length} />
+            {/* Export */}
+            <div className="relative">
+              <button
+                onClick={() => setExportOpen((v) => !v)}
+                disabled={!activeConvId || messages.length === 0}
+                className="flex items-center space-x-1.5 px-2 sm:px-3 py-1.5 rounded-full text-xs font-semibold border bg-background text-text-muted border-card-border hover:text-foreground disabled:opacity-40 cursor-pointer"
+                title="Export conversation"
+                aria-haspopup="menu"
+                aria-expanded={exportOpen}
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Export</span>
+              </button>
+              {exportOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setExportOpen(false)} />
+                  <div role="menu" className="absolute right-0 top-9 z-50 w-56 overflow-hidden rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-lg)] animate-zoom-in">
+                    <button role="menuitem" onClick={handleExportMarkdown} disabled={exporting} className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm hover:bg-surface-muted">
+                      <Download className="h-4 w-4 text-muted-foreground" />
+                      <span>Markdown (.md)<span className="block text-xs text-muted-foreground">Citations as footnotes</span></span>
+                    </button>
+                    <button role="menuitem" onClick={() => { setExportOpen(false); window.open(`/chat/print/${activeConvId}`, "_blank"); }} className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm hover:bg-surface-muted">
+                      <Printer className="h-4 w-4 text-muted-foreground" />
+                      <span>PDF / Print<span className="block text-xs text-muted-foreground">Opens a print view</span></span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
             {/* Notes Panel Toggle */}
             <button
               onClick={() => setShowNotesPanel(!showNotesPanel)}
@@ -793,6 +864,15 @@ function ChatPageContent() {
                           {/* Assistant actions bar (Metas and Note Pinning) */}
                           <div className="mt-4 pt-3 border-t border-card-border/30 flex flex-wrap items-center justify-between gap-2 text-xs text-text-muted">
                             <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                              {msg.mode && msg.mode !== "detailed" && (
+                                <span className="badge badge-neutral capitalize">{msg.mode}</span>
+                              )}
+                              {msg.usage && (msg.usage.prompt_tokens + msg.usage.completion_tokens) > 0 && (
+                                <span className="flex items-center gap-1" title={`${msg.usage.prompt_tokens.toLocaleString()} in / ${msg.usage.completion_tokens.toLocaleString()} out tokens · ${msg.usage.model ?? "model"}`}>
+                                  <span>{(msg.usage.prompt_tokens + msg.usage.completion_tokens).toLocaleString()} tok</span>
+                                  {msg.usage.cost_usd > 0 && <span>· ${msg.usage.cost_usd < 0.01 ? msg.usage.cost_usd.toFixed(4) : msg.usage.cost_usd.toFixed(3)}</span>}
+                                </span>
+                              )}
                               {msg.cached && (
                                 <span className="badge badge-accent" title="A near-identical question was answered before, so the saved answer was reused.">
                                   <Sparkles className="w-3 h-3" />Instant answer
@@ -887,6 +967,13 @@ function ChatPageContent() {
                         <span>{agentStatus}</span>
                       </div>
                     )}
+                    {subQuestions.length > 0 && !streamingText && (
+                      <ul className="mt-1 space-y-1 text-xs text-muted-foreground">
+                        {subQuestions.map((q) => (
+                          <li key={q} className="flex items-start gap-1.5"><span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-accent" />{q}</li>
+                        ))}
+                      </ul>
+                    )}
                     {streamingText && (
                       <div>
                         <MarkdownRenderer content={streamingText} onCite={(n) => openCitationByIndex(streamingCitations, n)} />
@@ -915,7 +1002,8 @@ function ChatPageContent() {
 
             {/* Suggested Queries */}
             {!isStreaming && messages.length > 0 && (
-              <div className="px-4 sm:px-6 py-2 flex gap-2 overflow-x-auto border-t border-card-border/30 [scrollbar-width:none]">
+              <div className="px-4 sm:px-6 py-2 flex items-center gap-2 overflow-x-auto border-t border-card-border/30 [scrollbar-width:none]">
+                {suggestions.length > 0 && <span className="shrink-0 text-[11px] font-semibold text-muted-foreground">Ask next:</span>}
                 {followUps.map((item, idx) => (
                   <button
                     key={idx}

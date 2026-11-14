@@ -1,0 +1,29 @@
+name: Golden evaluation
+
+# Scores every knowledge base's golden question set against the deployed
+# backend. Fails when the average score drops below GOLDEN_THRESHOLD.
+# Needs repository secrets: AGIS_API_URL, AGIS_EMAIL, AGIS_PASSWORD
+# (optional: AGIS_KB_IDS, GOLDEN_THRESHOLD as a variable).
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  golden:
+    runs-on: ubuntu-latest
+    if: ${{ vars.GOLDEN_EVAL_ENABLED != 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run golden question sets
+        env:
+          AGIS_API_URL: ${{ secrets.AGIS_API_URL }}
+          AGIS_EMAIL: ${{ secrets.AGIS_EMAIL }}
+          AGIS_PASSWORD: ${{ secrets.AGIS_PASSWORD }}
+          AGIS_KB_IDS: ${{ secrets.AGIS_KB_IDS }}
+          GOLDEN_THRESHOLD: ${{ vars.GOLDEN_THRESHOLD || '0.7' }}
+        run: python backend/scripts/golden_eval.py

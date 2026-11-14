@@ -331,5 +331,9 @@ async def update_user(
         
     await db.commit()
     await db.refresh(user)
+    if is_admin and (user_in.role is not None or user_in.is_active is not None):
+        from app.services import audit
+        await audit.record(db, current_user, "user.update", "user", user.id,
+                           {"email": user.email, "role": user.role, "is_active": user.is_active})
     return user
 

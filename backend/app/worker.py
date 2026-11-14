@@ -76,7 +76,7 @@ def _reset_redis_after_fork(**_kwargs):
 @celery_app.task(bind=True, name="process_document_task", ignore_result=True)
 def process_document_task(self, doc_id_str: str, file_path: str, filename: str,
                           chunk_size: int = None, chunk_overlap: int = None,
-                          redis_key: str = None):
+                          redis_key: str = None, storage_key: str = None):
     import uuid
     from app.core.database import SessionLocal
     from app.services.parser import document_parser
@@ -117,14 +117,25 @@ def process_document_task(self, doc_id_str: str, file_path: str, filename: str,
             doc_store.discard_document(redis_key)
 
     async def _do_work():
+        nonlocal source_path, temp_path
         # Recreate the connection pool to discard inherited connections from the parent process
         from app.core.database import engine
         engine.pool = engine.pool.recreate()
         
         try:
             if not source_path or not os.path.exists(source_path):
+                # Last resort: the original in object storage (S3/R2). This is
+                # how a worker on a different machine, or a file too big for
+                # Redis, still gets its bytes.
+                if storage_key:
+                    from app.services import storage as object_storage
+                    fetched = await object_storage.fetch_to_temp(storage_key, os.path.splitext(filename)[1])
+                    if fetched:
+                        temp_path = source_path = fetched
+                        logger.info(f"Worker fetched {doc_id_str} from object storage ({storage_key}).")
+            if not source_path or not os.path.exists(source_path):
                 raise FileNotFoundError(
-                    "Document bytes were not found in Redis and the source file is not on this worker's disk."
+                    "Document bytes were not found in Redis, on this worker's disk, or in object storage."
                 )
             # Step 1: Parse the file first without keeping a DB connection open
             progress.report(doc_id_str, "parsing")
@@ -145,10 +156,22 @@ def process_document_task(self, doc_id_str: str, file_path: str, filename: str,
                     await db.commit()
             raise e
 
+        # Step 1b: Summary + keywords (LLM, or a local heuristic). Used on
+        # the Documents page and prepended to chunks for contextual retrieval.
+        progress.report(doc_id_str, "summarizing")
+        try:
+            from app.services.summarizer import summarize_document
+            full_text = "\n\n".join((p.get("content") or "") for p in parsed_pages)
+            doc_summary = await summarize_document(filename, full_text)
+        except Exception as e:
+            logger.warning(f"Summary skipped for {doc_id_str}: {e}")
+            doc_summary = None
+
         # Step 2: Index in Qdrant and update PostgreSQL status
         try:
             async with SessionLocal() as db:
-                await document_indexer.index_document(db, doc_id, parsed_pages, chunk_size, chunk_overlap)
+                await document_indexer.index_document(db, doc_id, parsed_pages, chunk_size, chunk_overlap,
+                                                      doc_summary=doc_summary)
         except Exception as e:
             progress.report(doc_id_str, "failed", message=f"Indexing failed: {e}")
             # A fresh session: the indexing one may hold a broken connection.

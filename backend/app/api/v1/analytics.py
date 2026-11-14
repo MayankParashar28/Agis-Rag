@@ -2,7 +2,7 @@ import uuid
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, Integer
 
 from app.core.database import get_db
 from app.core.config import settings
@@ -105,6 +105,97 @@ async def get_observability_metrics(
         })
     return time_series
 
+@router.get("/costs")
+async def get_costs(
+    days: int = 30,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+) -> Any:
+    """Token usage and estimated cost: per day, per knowledge base, per model."""
+    from datetime import datetime, timedelta, timezone
+    from app.models.knowledge import KnowledgeBase
+
+    days = max(1, min(days, 365))
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    day = func.date_trunc("day", QueryLog.created_at)
+
+    per_day = (await db.execute(
+        select(day.label("day"), func.count(QueryLog.id), func.coalesce(func.sum(QueryLog.prompt_tokens), 0),
+               func.coalesce(func.sum(QueryLog.completion_tokens), 0), func.coalesce(func.sum(QueryLog.cost_usd), 0.0),
+               func.coalesce(func.sum(func.cast(QueryLog.cached, Integer)), 0))
+        .where(QueryLog.created_at >= since).group_by(day).order_by(day)
+    )).all()
+
+    per_kb = (await db.execute(
+        select(KnowledgeBase.name, QueryLog.kb_id, func.count(QueryLog.id),
+               func.coalesce(func.sum(QueryLog.prompt_tokens), 0), func.coalesce(func.sum(QueryLog.completion_tokens), 0),
+               func.coalesce(func.sum(QueryLog.cost_usd), 0.0), func.avg(QueryLog.latency))
+        .outerjoin(KnowledgeBase, KnowledgeBase.id == QueryLog.kb_id)
+        .where(QueryLog.created_at >= since).group_by(KnowledgeBase.name, QueryLog.kb_id)
+        .order_by(func.sum(QueryLog.cost_usd).desc().nullslast())
+    )).all()
+
+    per_model = (await db.execute(
+        select(QueryLog.model, func.count(QueryLog.id), func.coalesce(func.sum(QueryLog.prompt_tokens), 0),
+               func.coalesce(func.sum(QueryLog.completion_tokens), 0), func.coalesce(func.sum(QueryLog.cost_usd), 0.0))
+        .where(QueryLog.created_at >= since).group_by(QueryLog.model)
+    )).all()
+
+    total_cost = sum(float(r[4] or 0) for r in per_day)
+    total_queries = sum(int(r[1] or 0) for r in per_day)
+    return {
+        "days": days,
+        "totals": {
+            "queries": total_queries,
+            "cached": sum(int(r[5] or 0) for r in per_day),
+            "prompt_tokens": sum(int(r[2] or 0) for r in per_day),
+            "completion_tokens": sum(int(r[3] or 0) for r in per_day),
+            "cost_usd": round(total_cost, 4),
+            "avg_cost_per_query_usd": round(total_cost / total_queries, 6) if total_queries else 0.0,
+        },
+        "per_day": [{"day": r[0].strftime("%Y-%m-%d"), "queries": int(r[1]), "prompt_tokens": int(r[2]),
+                     "completion_tokens": int(r[3]), "cost_usd": round(float(r[4] or 0), 4), "cached": int(r[5] or 0)} for r in per_day],
+        "per_kb": [{"kb_id": str(r[1]) if r[1] else None, "kb_name": r[0] or "(deleted / unknown)", "queries": int(r[2]),
+                    "prompt_tokens": int(r[3]), "completion_tokens": int(r[4]), "cost_usd": round(float(r[5] or 0), 4),
+                    "avg_latency": round(float(r[6] or 0), 2)} for r in per_kb],
+        "per_model": [{"model": r[0] or "(local fallback)", "queries": int(r[1]), "prompt_tokens": int(r[2]),
+                       "completion_tokens": int(r[3]), "cost_usd": round(float(r[4] or 0), 4)} for r in per_model],
+        "note": "Costs are estimates from the pricing table (override with LLM_PRICING_JSON). Token counts come from the "
+                "provider when it reports them, otherwise from a 4-characters-per-token estimate.",
+    }
+
+
+@router.get("/audit")
+async def get_audit_log(
+    limit: int = 50,
+    offset: int = 0,
+    action: str | None = None,
+    user: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+) -> Any:
+    """Who did what: uploads, deletions, re-indexes, exports, role changes."""
+    from app.models.metrics import AuditLog
+    limit = max(1, min(limit, 200))
+    q = select(AuditLog)
+    cq = select(func.count(AuditLog.id))
+    if action:
+        q = q.where(AuditLog.action.like(f"{action}%"))
+        cq = cq.where(AuditLog.action.like(f"{action}%"))
+    if user:
+        q = q.where(AuditLog.user_email.ilike(f"%{user}%"))
+        cq = cq.where(AuditLog.user_email.ilike(f"%{user}%"))
+    total = (await db.execute(cq)).scalar() or 0
+    rows = (await db.execute(q.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit))).scalars().all()
+    actions = [r[0] for r in (await db.execute(select(AuditLog.action).distinct().order_by(AuditLog.action))).all()]
+    return {
+        "total": total,
+        "actions": actions,
+        "items": [{"id": str(r.id), "user_email": r.user_email, "action": r.action, "target_type": r.target_type,
+                   "target_id": r.target_id, "detail": r.detail or {}, "created_at": r.created_at.isoformat()} for r in rows],
+    }
+
+
 @router.get("/config-status")
 async def get_config_status(
     db: AsyncSession = Depends(get_db),
@@ -173,6 +264,13 @@ async def get_config_status(
         "rerank_top_n": settings.RERANK_TOP_N,
         "rerank_score_threshold": settings.RERANK_SCORE_THRESHOLD,
         "web_search_available": bool(settings.TAVILY_API_KEY),
+        "storage": __import__("app.services.storage", fromlist=["describe"]).describe(),
+        "features": {
+            "query_decomposition": settings.QUERY_DECOMPOSITION,
+            "follow_up_suggestions": settings.FOLLOW_UP_SUGGESTIONS,
+            "contextual_embeddings": settings.CONTEXTUAL_EMBEDDINGS,
+            "answer_cache": settings.ANSWER_CACHE_ENABLED,
+        },
     }
 
 

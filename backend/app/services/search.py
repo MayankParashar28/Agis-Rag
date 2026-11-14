@@ -191,6 +191,7 @@ class RetrievalPipeline:
                     Document.filename,
                     DocumentChunk.id,
                     DocumentChunk.doc_id,
+                    DocumentChunk.section,
                     func.ts_rank_cd(
                         func.to_tsvector('english', DocumentChunk.content),
                         func.plainto_tsquery('english', query)
@@ -219,7 +220,8 @@ class RetrievalPipeline:
                     "source": row[3],
                     "chunk_id": str(row[4]),
                     "doc_id": str(row[5]),
-                    "score": float(row[6])
+                    "section": row[6],
+                    "score": float(row[7])
                 })
         except Exception as e:
             logger.error(f"PostgreSQL FTS failed: {str(e)}")

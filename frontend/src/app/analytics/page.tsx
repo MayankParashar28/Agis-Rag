@@ -5,6 +5,7 @@ import { api, ObservabilityLog } from "@/lib/api";
 import { useApi, useRequireAuth } from "@/lib/hooks";
 import { SVGLineChart } from "@/components/analytics-charts";
 import { Alert, Card, CardHeader, EmptyState, PageHeader, Skeleton, cx } from "@/components/ui";
+import CostPanel from "@/components/analytics/CostPanel";
 
 export default function AnalyticsPage() {
   const allowed = useRequireAuth({ adminOnly: true });
@@ -18,8 +19,12 @@ export default function AnalyticsPage() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader eyebrow="Admin" title="Analytics" description="Per-query latency, retrieval quality and hallucination rate." />
+      <PageHeader eyebrow="Admin" title="Analytics" description="Per-query latency, retrieval quality, hallucination rate, and what it all costs." />
       {error && <Alert tone="danger">{error}</Alert>}
+
+      <CostPanel />
+
+      <h2 className="text-base font-semibold">Quality and latency</h2>
 
       {loading ? (
         <div className="grid gap-4 lg:grid-cols-2">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-72" />)}</div>

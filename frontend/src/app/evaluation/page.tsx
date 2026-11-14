@@ -6,7 +6,8 @@ import { Database, Play, TrendingUp } from "lucide-react";
 import { api, EvaluationResult, KnowledgeBase } from "@/lib/api";
 import { errorMessage, useApi, useRequireAuth } from "@/lib/hooks";
 import { SVGLineChart } from "@/components/analytics-charts";
-import { Alert, Card, EmptyState, KBSelect, PageHeader, Skeleton, Spinner, StatCard } from "@/components/ui";
+import { Alert, Card, EmptyState, KBSelect, PageHeader, Skeleton, Spinner, StatCard, cx } from "@/components/ui";
+import GoldenPanel from "@/components/evaluation/GoldenPanel";
 
 type Metric = "faithfulness" | "context_precision" | "context_recall" | "answer_relevancy";
 
@@ -31,6 +32,7 @@ export default function EvaluationPage() {
   );
   const evals = evalsQuery.data ?? [];
   const [evaluating, setEvaluating] = useState(false);
+  const [tab, setTab] = useState<"golden" | "ragas">("golden");
   const [error, setError] = useState<string | null>(null);
 
   const run = async () => {
@@ -65,12 +67,14 @@ export default function EvaluationPage() {
       <PageHeader
         eyebrow="Quality"
         title="Evaluation"
-        description="RAGAS audits score how truthful, relevant and complete the answers in a knowledge base are."
+        description="Golden question sets score the pipeline against known answers (also nightly in CI). RAGAS audits score recent conversations."
         actions={
-          <button className="btn btn-primary" onClick={run} disabled={evaluating || !selectedKBId}>
-            {evaluating ? <Spinner /> : <Play className="h-4 w-4" />}
-            {evaluating ? "Running audit…" : "Run audit"}
-          </button>
+          tab === "ragas" ? (
+            <button className="btn btn-primary" onClick={run} disabled={evaluating || !selectedKBId}>
+              {evaluating ? <Spinner /> : <Play className="h-4 w-4" />}
+              {evaluating ? "Running audit…" : "Run RAGAS audit"}
+            </button>
+          ) : undefined
         }
       />
 
@@ -91,9 +95,18 @@ export default function EvaluationPage() {
         </Card>
       ) : (
         <>
-          <Card className="p-5"><div className="max-w-md"><KBSelect kbs={kbs} value={selectedKBId} onChange={setPickedKB} label="Knowledge base to audit" /></div></Card>
+          <Card className="flex flex-col gap-4 p-5 sm:flex-row sm:items-end sm:justify-between">
+            <div className="w-full max-w-md"><KBSelect kbs={kbs} value={selectedKBId} onChange={setPickedKB} label="Knowledge base to evaluate" /></div>
+            <div role="tablist" className="flex rounded-lg border border-border bg-background p-0.5 text-sm">
+              {([["golden", "Golden questions"], ["ragas", "RAGAS audit"]] as const).map(([id, label]) => (
+                <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)} className={cx("rounded-md px-3 py-1.5 font-semibold", tab === id ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground")}>{label}</button>
+              ))}
+            </div>
+          </Card>
 
-          {evalsQuery.loading ? (
+          {tab === "golden" ? (
+            selectedKBId && <GoldenPanel kbId={selectedKBId} />
+          ) : evalsQuery.loading ? (
             <div className="grid gap-4 md:grid-cols-2">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-72" />)}</div>
           ) : evals.length === 0 ? (
             <Card>

@@ -32,6 +32,10 @@ from app.services.agent import (
 from app.services.memory import chat_memory
 from app.services import answer_cache
 from app.services.guard import build_context, SOURCE_RULES
+from app.services import llm as llm_helper
+from app.services import audit
+from app.services.followups import suggest_follow_ups
+from app.services.export import conversation_to_markdown
 from app.core.config import settings
 import re
 
@@ -161,7 +165,7 @@ def build_citation(idx: int, chunk: Dict[str, Any]) -> Dict[str, Any]:
     return citation
 
 
-async def _serve_cached_answer(db, query_in: ChatQuery, user_id: uuid.UUID, hit: Dict[str, Any], total_start: float):
+async def _serve_cached_answer(db, query_in: ChatQuery, user_id: uuid.UUID, hit: Dict[str, Any], total_start: float, kb_id=None):
     """Stream a cached answer and record it like any other turn."""
     yield f"data: {json.dumps({'event': 'status', 'message': 'Found a matching answer from an earlier question...'})}\n\n"
     answer = hit["answer"]
@@ -180,7 +184,8 @@ async def _serve_cached_answer(db, query_in: ChatQuery, user_id: uuid.UUID, hit:
     db.add(QueryLog(id=log_id, user_id=user_id, query=query_in.query, latency=latency,
                     embedding_latency=0.0, retrieval_latency=0.0,
                     hallucination_rate=round((100.0 - confidence) / 100.0, 4),
-                    retrieval_score=0.0))
+                    retrieval_score=0.0, kb_id=kb_id, cached=True, cost_usd=0.0, prompt_tokens=0, completion_tokens=0,
+                    mode=query_in.mode or "detailed"))
     conv = (await db.execute(select(Conversation).where(Conversation.id == query_in.conversation_id))).scalar_one_or_none()
     if conv:
         conv.updated_at = func.now()
@@ -189,6 +194,52 @@ async def _serve_cached_answer(db, query_in: ChatQuery, user_id: uuid.UUID, hit:
     await chat_memory.add_message(str(query_in.conversation_id), {"sender": "assistant", "content": answer, "citations": citations})
     yield f"data: {json.dumps({'event': 'metadata', 'query_log_id': str(log_id), 'citations': citations, 'confidence_score': round(confidence, 2), 'confidence_method': 'cached', 'cached': True, 'cache_similarity': hit.get('similarity'), 'latency': latency, 'latency_breakdown': {'cache': latency}})}\n\n"
     yield "data: [DONE]\n\n"
+
+
+def _compare_instruction(chunks):
+    names = []
+    for c in chunks:
+        n = c.get("filename")
+        if n and n not in names:
+            names.append(n)
+    cols = " | ".join(names) if names else "each document"
+    return (
+        "6. The user wants a COMPARISON across these documents: " + ", ".join(names) + ".\n"
+        "   Reply in this structure:\n"
+        "   - A Markdown table whose first column is 'Aspect' followed by one column per document (" + cols + "), "
+        "one row per point of comparison, citing [Source X] inside the cells. Write 'not stated' when a document has no information on that aspect.\n"
+        "   - '**Key differences**': a short bullet list.\n"
+        "   - '**Where they agree**': a short bullet list (or 'None found')."
+    )
+
+
+MODE_INSTRUCTIONS = {
+    "quick": lambda chunks: "6. Answer in at most three sentences. No headings, no lists, just the direct answer with its citations.",
+    "detailed": lambda chunks: "6. Give a complete answer. Use short headings or bullet points where they help, and include the specific figures, dates and names from the sources.",
+    "compare": _compare_instruction,
+}
+
+
+@router.get("/conversations/{conv_id}/export")
+async def export_conversation(
+    conv_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Download a conversation as Markdown (citations become footnotes)."""
+    conv = (await db.execute(select(Conversation).where(Conversation.id == conv_id, Conversation.user_id == current_user.id))).scalar_one_or_none()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    msgs = (await db.execute(select(Message).where(Message.conversation_id == conv_id).order_by(Message.created_at.asc()))).scalars().all()
+    kb_name = None
+    if conv.kb_id:
+        kb = (await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == conv.kb_id))).scalar_one_or_none()
+        kb_name = kb.name if kb else None
+    text = conversation_to_markdown(conv, msgs, kb_name)
+    await audit.record(db, current_user, "conversation.export", "conversation", conv_id, {"title": conv.title, "messages": len(msgs)})
+    safe = re.sub(r"[^\w\- ]+", "", conv.title).strip() or "conversation"
+    return Response(content=text, media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{safe}.md"'})
 
 
 # --- SSE Streaming Response Generator ---
@@ -206,14 +257,14 @@ async def stream_agentic_rag(
         # web-search answers (those go stale).
         cache_embedding = None
         cache_eligible = False
-        if settings.ANSWER_CACHE_ENABLED and not query_in.web_search_enabled:
+        if settings.ANSWER_CACHE_ENABLED and not query_in.web_search_enabled and (query_in.mode or "detailed") == "detailed":
             prior = await chat_memory.get_history(str(query_in.conversation_id), limit=1)
             cache_eligible = not prior
         if cache_eligible:
             cache_embedding = await answer_cache.get_query_embedding(query_in.query)
             hit = await answer_cache.lookup(kb_id, query_in.query, cache_embedding, query_in.document_ids)
             if hit:
-                async for event in _serve_cached_answer(db, query_in, user_id, hit, total_start):
+                async for event in _serve_cached_answer(db, query_in, user_id, hit, total_start, kb_id=kb_id):
                     yield event
                 return
 
@@ -235,8 +286,18 @@ async def stream_agentic_rag(
             "retry_count": 0,
             "revised_query": query_in.query,
             "latency_breakdown": {},
-            "document_ids": query_in.document_ids
+            "document_ids": query_in.document_ids,
+            "mode": (query_in.mode or "detailed") if (query_in.mode in ("quick", "detailed", "compare")) else "detailed",
         }
+        mode = state["mode"]
+        usage_total = llm_helper.Usage()
+
+        if mode == "compare" and len(query_in.document_ids or []) < 2:
+            msg = "Compare mode needs at least two documents. Pick them in the document menu, then ask again."
+            yield f"data: {json.dumps({'event': 'token', 'text': msg})}\n\n"
+            yield f"data: {json.dumps({'event': 'metadata', 'citations': [], 'confidence_score': 0, 'latency': 0, 'latency_breakdown': {}, 'error': True})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
         
         # Run classification
         class_res = await classify_query_node(state)
@@ -248,6 +309,10 @@ async def stream_agentic_rag(
         
         ret_res = await retrieve_context_node(state)
         state.update(ret_res)
+        usage_total.add(state.get("helper_usage"))
+        if state.get("sub_questions"):
+            yield f"data: {json.dumps({'event': 'sub_questions', 'questions': state['sub_questions']})}\n\n"
+            yield f"data: {json.dumps({'event': 'status', 'message': 'Searching as ' + str(len(state['sub_questions'])) + ' separate questions...'})}\n\n"
         
         # Step 3: Reranking
         retrieved_count = len(state["retrieved_chunks"])
@@ -361,12 +426,15 @@ async def stream_agentic_rag(
             "1. Do NOT assume, extrapolate, or generalize facts not directly stated in the sources.\n"
             "2. Do NOT use any of your own outside or general training knowledge under any circumstances.\n"
             "3. If the sources do not contain the exact facts to answer the question, state clearly: 'I cannot find the answer in the provided documents.'\n"
-            "4. Cite your sources exactly when presenting facts (e.g. at the end of the sentence use [Source X]).\n\n"
+            "4. Cite your sources exactly when presenting facts (e.g. at the end of the sentence use [Source X]).\n"
+            "5. When a source contains a Markdown table, keep the relevant rows as a Markdown table in your answer instead of flattening them into prose.\n"
+            f"{MODE_INSTRUCTIONS[mode](relevant_chunks)}\n\n"
             f"{SOURCE_RULES}\n\n"
             f"Sources:\n{context_str}"
         )
         
         full_response_text = ""
+        gen_usage = None
         gen_start = time.time()
         
         # Fetch conversation history from Redis memory to prepend to LLM context
@@ -399,24 +467,32 @@ async def stream_agentic_rag(
                         if provider.base_url
                         else openai.AsyncOpenAI(api_key=provider.api_key)
                     )
-                    stream = await client.chat.completions.create(
-                        model=provider.model,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            *formatted_history,
-                            {"role": "user", "content": query_in.query}
-                        ],
-                        temperature=0.0,
-                        stream=True
-                    )
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        *formatted_history,
+                        {"role": "user", "content": query_in.query}
+                    ]
+                    stream_kwargs = dict(model=provider.model, messages=messages, temperature=0.0, stream=True)
+                    if provider.label == "OpenAI":
+                        # Ask for the token count in the final chunk.
+                        stream_kwargs["stream_options"] = {"include_usage": True}
+                    stream = await client.chat.completions.create(**stream_kwargs)
 
+                    reported_usage = None
                     async for chunk in stream:
+                        if getattr(chunk, "usage", None):
+                            reported_usage = chunk.usage
+                        if not chunk.choices:
+                            continue
                         token = chunk.choices[0].delta.content or ""
                         if token:
                             emitted = True
                             full_response_text += token
                             yield f"data: {json.dumps({'event': 'token', 'text': token})}\n\n"
 
+                    gen_usage = llm_helper.usage_from_response(
+                        provider.label, provider.model, reported_usage,
+                        "".join(m["content"] for m in messages), full_response_text)
                     answered = True
                     break
 
@@ -510,7 +586,10 @@ async def stream_agentic_rag(
                 + state["latency_breakdown"].get("sparse_search", 0.0)
             ),
             hallucination_rate=round((100.0 - fast_confidence) / 100.0, 4),
-            retrieval_score=avg_retrieval_score
+            retrieval_score=avg_retrieval_score,
+            kb_id=kb_id,
+            mode=mode,
+            cached=False,
         )
         
         db.add(user_msg)
@@ -548,16 +627,35 @@ async def stream_agentic_rag(
 
         confidence = fast_confidence
         confidence_method = "heuristic"
-        try:
-            eval_res = await self_evaluate_node(state_copy)
-            scored = eval_res.get("confidence_score")
-            if isinstance(scored, (int, float)):
-                confidence = float(scored)
-                confidence_method = eval_res.get("confidence_method", "llm")
-        except Exception as eval_err:
-            logger.error(f"Self-evaluation failed: {eval_err}")
 
-        yield f"data: {json.dumps({'event': 'confidence', 'confidence_score': round(confidence, 2), 'confidence_method': confidence_method})}\n\n"
+        async def _judge():
+            try:
+                return await self_evaluate_node(state_copy)
+            except Exception as eval_err:
+                logger.error(f"Self-evaluation failed: {eval_err}")
+                return {}
+
+        async def _followups():
+            if not settings.FOLLOW_UP_SUGGESTIONS:
+                return [], None
+            try:
+                return await suggest_follow_ups(query_in.query, full_response_text, relevant_chunks)
+            except Exception as e:
+                logger.warning(f"Follow-up suggestions skipped: {e}")
+                return [], None
+
+        eval_res, (follow_ups, fu_usage) = await asyncio.gather(_judge(), _followups())
+        usage_total.add(gen_usage).add(fu_usage)
+        scored = (eval_res or {}).get("confidence_score")
+        if isinstance(scored, (int, float)):
+            confidence = float(scored)
+            confidence_method = eval_res.get("confidence_method", "llm")
+
+        if follow_ups:
+            yield f"data: {json.dumps({'event': 'suggestions', 'questions': follow_ups})}\n\n"
+        usage_payload = {'prompt_tokens': usage_total.prompt_tokens, 'completion_tokens': usage_total.completion_tokens,
+                         'model': usage_total.model or None, 'cost_usd': usage_total.cost_usd}
+        yield f"data: {json.dumps({'event': 'confidence', 'confidence_score': round(confidence, 2), 'confidence_method': confidence_method, 'usage': usage_payload})}\n\n"
         yield "data: [DONE]\n\n"
 
         # Remember confident, judged, non-weak answers for near-identical questions.
@@ -575,6 +673,10 @@ async def stream_agentic_rag(
                 qlog = result.scalar_one_or_none()
                 if qlog:
                     qlog.hallucination_rate = round((100.0 - confidence) / 100.0, 4)
+                    qlog.model = usage_total.model or None
+                    qlog.prompt_tokens = usage_total.prompt_tokens
+                    qlog.completion_tokens = usage_total.completion_tokens
+                    qlog.cost_usd = usage_total.cost_usd
                     await background_db.commit()
         except Exception as persist_err:
             logger.error(f"Failed to persist judged confidence: {persist_err}")
