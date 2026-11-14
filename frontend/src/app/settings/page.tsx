@@ -18,6 +18,8 @@ interface ConfigStatus {
   gemini_configured: boolean;
   gemini_model: string | null;
   openai_model?: string | null;
+  storage?: { backend: string; bucket: string | null; endpoint: string | null };
+  features?: Record<string, boolean>;
 }
 
 function ServiceRow({
@@ -153,6 +155,13 @@ export default function SettingsPage() {
               <ServiceRow icon={ServerCog} name="LlamaParse" purpose="Layout-aware parsing of PDFs and Word files." state={status.llamaparse_configured ? "ok" : "fallback"} detail={status.llamaparse_configured ? undefined : "Using local pypdf / python-docx parsing."} />
               <ServiceRow icon={Search} name="Tavily web search" purpose="Adds live web results when web search is switched on in Chat." state={status.tavily_configured ? "ok" : "off"} />
               <ServiceRow icon={Globe} name="URL import" purpose="Index web pages and linked files from the Documents page." state="ok" detail="Built in; private network addresses are blocked." />
+              <ServiceRow
+                icon={HardDrive} name="Original file storage" purpose="Where uploaded files are kept for re-indexing and 'open original'."
+                state={status.storage?.backend === "s3" ? "ok" : "fallback"}
+                detail={status.storage?.backend === "s3"
+                  ? `S3-compatible bucket "${status.storage.bucket}"${status.storage.endpoint ? ` at ${status.storage.endpoint}` : ""}`
+                  : "Local disk. Files are lost when the host wipes its disk on deploy; set STORAGE_BACKEND=s3 to keep them."}
+              />
             </ul>
           )}
         </Card>

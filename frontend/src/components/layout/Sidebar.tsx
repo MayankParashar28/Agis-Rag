@@ -14,6 +14,7 @@ import {
   LogOut,
   Users,
   Files,
+  ScrollText,
   X,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -39,6 +40,7 @@ const sections = [
       { name: "Analytics", href: "/analytics", icon: BarChart3 },
       { name: "Users", href: "/users", icon: Users },
       { name: "All Documents", href: "/admin/documents", icon: Files },
+      { name: "Audit Log", href: "/audit", icon: ScrollText },
     ],
   },
 ];

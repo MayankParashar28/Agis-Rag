@@ -162,6 +162,10 @@ export function prefetchRouteData(href: string) {
       break;
     case "/analytics":
       api.getObservabilityLogs().catch(swallow);
+      api.getCosts(30).catch(swallow);
+      break;
+    case "/audit":
+      api.getAuditLog({ limit: 50 }).catch(swallow);
       break;
     case "/users":
       api.listUsers().catch(swallow);
