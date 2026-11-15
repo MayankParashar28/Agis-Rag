@@ -66,7 +66,11 @@ function GoldenPanelInner({ kbId }: { kbId: string }) {
     try {
       const res = await api.suggestGoldenQuestions(kbId, 5);
       setDrafts(res.items);
-      if (!res.items.length) setNotice({ tone: "warning", text: "No suggestions could be drafted. Index a document first." });
+      if (!res.items.length) {
+        setNotice({ tone: "warning", text: res.reason || "No questions could be drafted from this knowledge base. Add some manually with Add." });
+      } else if (res.method === "heuristic") {
+        setNotice({ tone: "warning", text: "Drafted from the document text without an AI model (none was reachable). Review and edit them before adding." });
+      }
     } catch (e) {
       setNotice({ tone: "danger", text: errorMessage(e, "Could not draft questions.") });
     } finally {
@@ -109,7 +113,7 @@ function GoldenPanelInner({ kbId }: { kbId: string }) {
     <div className="space-y-4">
       {notice && <Alert tone={notice.tone} onClose={() => setNotice(null)}>{notice.text}</Alert>}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
         <StatCard label="Golden questions" value={questions ? questions.length : <Skeleton className="h-7 w-10" />} />
         <StatCard label="Latest score" value={latest ? pct(latest.overall_score) : "—"} hint={latest ? `${latest.passed}/${latest.total} passed · threshold ${Math.round(latest.threshold * 100)}%` : "No runs yet"} />
         <StatCard label="Correctness" value={latest ? pct(latest.correctness) : "—"} hint="Agreement with expected answers" />
@@ -205,7 +209,7 @@ function GoldenPanelInner({ kbId }: { kbId: string }) {
                     <ul className="divide-y divide-border border-t border-border bg-background">
                       {r.results.map((res) => (
                         <li key={res.question_id} className="px-4 py-2.5">
-                          <button className="flex w-full items-start gap-3 text-left" onClick={() => setOpenResult(openResult === res.question_id ? null : res.question_id)}>
+                          <button className="flex w-full items-start gap-3 py-1.5 text-left sm:py-0" onClick={() => setOpenResult(openResult === res.question_id ? null : res.question_id)}>
                             <span className={cx("badge shrink-0 tabular-nums", res.passed ? "badge-success" : "badge-danger")}>{pct(res.score)}</span>
                             <span className="min-w-0 flex-1 text-sm">{res.question}</span>
                           </button>

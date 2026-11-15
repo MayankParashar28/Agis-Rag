@@ -99,7 +99,7 @@ export default function SettingsPage() {
       <PageHeader eyebrow="Account" title="Settings" description="Your profile and, for admins, the health of every backing service." />
       {notice && <Alert tone={notice.tone} onClose={() => setNotice(null)}>{notice.text}</Alert>}
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4">
         <StatCard label="Knowledge bases" value={kbsQuery.loading ? <Skeleton className="h-7 w-10" /> : (kbsQuery.data?.length ?? "—")} icon={Database} />
         <StatCard label="Role" value={isAdmin ? "Admin" : "Member"} icon={UserIcon} />
         <StatCard label="Member since" value={<span className="text-base">{joined}</span>} />
@@ -152,7 +152,7 @@ export default function SettingsPage() {
                 state={status.gemini_configured || status.openai_configured ? "ok" : "fallback"}
                 detail={[status.gemini_configured && `Gemini: ${status.gemini_model}`, status.openai_configured && `OpenAI: ${status.openai_model ?? "configured"}`].filter(Boolean).join(" · ") || "No key set; answers use the offline summarizer."}
               />
-              <ServiceRow icon={ServerCog} name="LlamaParse" purpose="Layout-aware parsing of PDFs and Word files." state={status.llamaparse_configured ? "ok" : "fallback"} detail={status.llamaparse_configured ? undefined : "Using local pypdf / python-docx parsing."} />
+              <ServiceRow icon={ServerCog} name="LlamaParse" purpose="Layout-aware parsing of PDFs, Word and PowerPoint files." state={status.llamaparse_configured ? "ok" : "fallback"} detail={status.llamaparse_configured ? undefined : "Using the built-in readers (tables and OCR included)."} />
               <ServiceRow icon={Search} name="Tavily web search" purpose="Adds live web results when web search is switched on in Chat." state={status.tavily_configured ? "ok" : "off"} />
               <ServiceRow icon={Globe} name="URL import" purpose="Index web pages and linked files from the Documents page." state="ok" detail="Built in; private network addresses are blocked." />
               <ServiceRow

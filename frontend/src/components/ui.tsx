@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useEffect, useRef } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, Info, Loader2, X, XCircle } from "lucide-react";
 import type { IndexingProgress } from "@/lib/api";
 
@@ -37,12 +37,12 @@ export function Card({ className, children }: { className?: string; children: Re
 
 export function CardHeader({ title, description, actions }: { title: ReactNode; description?: ReactNode; actions?: ReactNode }) {
   return (
-    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
+    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-4 sm:px-5">
       <div className="min-w-0">
         <h2 className="text-[15px] font-semibold text-foreground">{title}</h2>
         {description && <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>}
       </div>
-      {actions && <div className="flex items-center gap-2">{actions}</div>}
+      {actions && <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto [&>div]:w-full sm:[&>div]:w-auto">{actions}</div>}
     </div>
   );
 }
@@ -140,12 +140,12 @@ export function StatCard({
   icon?: React.ComponentType<{ className?: string }>;
 }) {
   return (
-    <div className="card p-5">
-      <div className="flex items-center justify-between">
-        <span className="text-[13px] font-medium text-muted-foreground">{label}</span>
+    <div className="card p-4 sm:p-5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[12px] font-medium text-muted-foreground sm:text-[13px]">{label}</span>
         {Icon && <Icon className="h-4 w-4 text-muted-foreground" />}
       </div>
-      <div className="mt-3 text-2xl font-semibold tracking-tight text-foreground tabular-nums">{value}</div>
+      <div className="mt-2 text-xl font-semibold tracking-tight text-foreground tabular-nums sm:mt-3 sm:text-2xl">{value}</div>
       {hint && <div className="mt-1 text-xs text-muted-foreground">{hint}</div>}
     </div>
   );
@@ -310,6 +310,50 @@ export function KBSelect({
           </option>
         ))}
       </select>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Toasts: small, non-blocking notifications (replaces window.alert).
+// ---------------------------------------------------------------------------
+type ToastTone = "success" | "danger" | "info";
+interface ToastItem { id: number; text: string; tone: ToastTone; action?: { label: string; onClick: () => void } }
+
+let toastSeq = 0;
+export function toast(text: string, tone: ToastTone = "success", action?: ToastItem["action"]) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent<ToastItem>("agis:toast", { detail: { id: ++toastSeq, text, tone, action } }));
+}
+
+export function Toaster() {
+  const [items, setItems] = useState<ToastItem[]>([]);
+  useEffect(() => {
+    const onToast = (e: Event) => {
+      const t = (e as CustomEvent<ToastItem>).detail;
+      setItems((prev) => [...prev.slice(-2), t]);
+      setTimeout(() => setItems((prev) => prev.filter((x) => x.id !== t.id)), t.tone === "danger" ? 6000 : 3500);
+    };
+    window.addEventListener("agis:toast", onToast);
+    return () => window.removeEventListener("agis:toast", onToast);
+  }, []);
+  if (!items.length) return null;
+  return (
+    <div className="pointer-events-none fixed inset-x-0 bottom-24 z-[200] flex flex-col items-center gap-2 px-4 sm:bottom-6" aria-live="polite">
+      {items.map((t) => {
+        const Icon = t.tone === "danger" ? XCircle : t.tone === "info" ? Info : CheckCircle2;
+        return (
+          <div key={t.id} role={t.tone === "danger" ? "alert" : "status"}
+            className="pointer-events-auto flex w-full max-w-sm items-center gap-3 rounded-xl border border-border bg-foreground px-4 py-3 text-sm text-background shadow-[var(--shadow-lg)] animate-fade-in">
+            <Icon className={cx("h-4 w-4 shrink-0", t.tone === "danger" ? "text-[#f3a29a]" : "text-[#e8d19a]")} />
+            <span className="min-w-0 flex-1">{t.text}</span>
+            {t.action && (
+              <button onClick={() => { t.action!.onClick(); setItems((p) => p.filter((x) => x.id !== t.id)); }}
+                className="shrink-0 text-xs font-semibold text-[#e8d19a] hover:underline">{t.action.label}</button>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

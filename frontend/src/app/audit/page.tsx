@@ -84,15 +84,15 @@ export default function AuditPage() {
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="table">
+              <table className="table table-stack">
                 <thead><tr><th>When</th><th>User</th><th>Action</th><th>Details</th></tr></thead>
                 <tbody>
                   {data.items.map((e) => (
                     <tr key={e.id}>
                       <td className="whitespace-nowrap text-xs text-muted-foreground">{new Date(e.created_at).toLocaleString()}</td>
-                      <td className="text-sm">{e.user_email ?? <span className="text-muted-foreground">system</span>}</td>
-                      <td><span className={cx("badge", e.action.includes("delete") ? "badge-danger" : e.action.includes("upload") || e.action.includes("import") || e.action.includes("create") ? "badge-success" : "badge-neutral")}>{ACTION_LABEL[e.action] ?? e.action}</span></td>
-                      <td className="max-w-[420px] truncate text-sm" title={describe(e)}>{describe(e) || <span className="text-muted-foreground">{e.target_type} {e.target_id?.slice(0, 8)}</span>}</td>
+                      <td data-label="User" className="text-sm">{e.user_email ?? <span className="text-muted-foreground">system</span>}</td>
+                      <td data-label="Action"><span className={cx("badge", e.action.includes("delete") ? "badge-danger" : e.action.includes("upload") || e.action.includes("import") || e.action.includes("create") ? "badge-success" : "badge-neutral")}>{ACTION_LABEL[e.action] ?? e.action}</span></td>
+                      <td data-label="Details" className="max-w-[420px] truncate text-sm" title={describe(e)}>{describe(e) || <span className="text-muted-foreground">{e.target_type} {e.target_id?.slice(0, 8)}</span>}</td>
                     </tr>
                   ))}
                 </tbody>

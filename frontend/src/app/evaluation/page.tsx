@@ -19,7 +19,7 @@ const METRICS: Array<{ key: Metric; name: string; desc: string; color: string }>
 ];
 
 export default function EvaluationPage() {
-  const allowed = useRequireAuth();
+  const allowed = useRequireAuth({ adminOnly: true });
   const router = useRouter();
   const kbsQuery = useApi<KnowledgeBase[]>(allowed ? "/knowledge-bases" : null, api.listKBs);
   const kbs = kbsQuery.data ?? [];
@@ -110,12 +110,13 @@ export default function EvaluationPage() {
             <div className="grid gap-4 md:grid-cols-2">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-72" />)}</div>
           ) : evals.length === 0 ? (
             <Card>
-              <EmptyState icon={TrendingUp} title="No audits yet" description="Run an audit to score recent conversations in this knowledge base."
+              <EmptyState icon={TrendingUp} title="No RAGAS audits yet"
+                description={<>A RAGAS audit scores the <strong>past chat conversations</strong> in this knowledge base: faithfulness, relevancy, precision and recall. Ask a few questions in Chat first, then run it. To test answers without chatting, use the Golden questions tab.</>}
                 action={<button className="btn btn-primary" onClick={run} disabled={evaluating}>{evaluating && <Spinner />}Run first audit</button>} />
             </Card>
           ) : (
             <>
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
                 {METRICS.map((m) => {
                   const v = latest?.[m.key];
                   return <StatCard key={m.key} label={m.name} value={v == null ? "—" : `${((v as number) * 100).toFixed(1)}%`} hint="Latest audit" />;

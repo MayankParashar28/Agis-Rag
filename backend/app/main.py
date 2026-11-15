@@ -23,22 +23,30 @@ setup_logging()
 async def lifespan(app: FastAPI):
     # Startup actions
     logger.info("FastAPI service starting up...")
+    # Each step has its own guard: they used to share one try block, so an
+    # unreachable Redis skipped the vector-index healing that follows it.
     try:
-        # Initialize Database Tables
         await init_db()
-        # Initialize Redis connection
-        await init_redis()
-        # Rebuild any vector collection that has gone missing. A Qdrant Cloud
-        # free cluster is suspended after a week idle and deleted after four,
-        # and a Space's own disk is ephemeral - so the index can vanish while
-        # Postgres, the source of truth, still holds every chunk. Runs in the
-        # background: it must never hold up the port binding.
-        asyncio.create_task(_heal_vector_index())
-        logger.info("Startup sequence completed successfully.")
     except Exception as e:
-        logger.critical(f"Startup sequence failed: {str(e)}")
-        # In a real environment, we might want to shut down, but we proceed so containers stay open for debug
-    
+        logger.critical(f"Database initialisation failed: {e}")
+    try:
+        await init_redis()
+    except Exception as e:
+        logger.warning(f"Redis unavailable, continuing without it: {e}")
+    # Rebuild any vector collection that has gone missing. A Qdrant Cloud
+    # free cluster is suspended after a week idle and deleted after four,
+    # and a Space's own disk is ephemeral - so the index can vanish while
+    # Postgres, the source of truth, still holds every chunk. Runs in the
+    # background: it must never hold up the port binding.
+    asyncio.create_task(_heal_vector_index())
+    logger.info(f"Startup sequence completed (indexing mode: {settings.INDEXING_MODE}).")
+    if settings.INDEXING_MODE == "celery" and any(h in settings.REDIS_URL for h in ("upstash.io", "redislabs.com", "redis-cloud.com")):
+        logger.warning(
+            "INDEXING_MODE=celery with a hosted Redis: an idle Celery worker polls Redis "
+            f"every {settings.CELERY_POLL_SECONDS}s around the clock and counts against the "
+            "provider's command quota. Use INDEXING_MODE=inprocess, or a local Redis for development."
+        )
+
     yield
     
     # Shutdown actions

@@ -44,7 +44,7 @@ export default function AnalyticsPage() {
           <Card className="overflow-hidden">
             <CardHeader title="Recent queries" description={`Latest ${Math.min(logs.length, 15)} of ${logs.length}`} />
             <div className="overflow-x-auto">
-              <table className="table">
+              <table className="table table-stack">
                 <thead>
                   <tr>
                     <th>Time</th>
@@ -60,12 +60,12 @@ export default function AnalyticsPage() {
                     return (
                       <tr key={idx}>
                         <td className="font-mono text-xs text-muted-foreground">{log.timestamp}</td>
-                        <td className="text-right tabular-nums">{log.query_latency.toFixed(0)} ms</td>
-                        <td className="text-right tabular-nums">{log.retrieval_latency.toFixed(0)} ms</td>
-                        <td className="text-right">
+                        <td data-label="Latency" className="text-right tabular-nums">{log.query_latency.toFixed(0)} ms</td>
+                        <td data-label="Retrieval" className="text-right tabular-nums">{log.retrieval_latency.toFixed(0)} ms</td>
+                        <td data-label="Hallucination" className="text-right">
                           <span className={cx("badge", hall > 20 ? "badge-danger" : "badge-success")}>{hall.toFixed(1)}%</span>
                         </td>
-                        <td className="text-right tabular-nums">{(log.retrieval_score * 100).toFixed(1)}%</td>
+                        <td data-label="Score" className="text-right tabular-nums">{(log.retrieval_score * 100).toFixed(1)}%</td>
                       </tr>
                     );
                   })}

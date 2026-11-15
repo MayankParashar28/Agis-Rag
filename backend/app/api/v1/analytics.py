@@ -228,7 +228,8 @@ async def get_config_status(
             # drain back to 0 once the worker has picked every upload up.
             import asyncio
             from app.services import doc_store
-            redis_pending_documents = await asyncio.to_thread(doc_store.count_staged)
+            if settings.INDEXING_MODE != "inprocess":
+                redis_pending_documents = await asyncio.to_thread(doc_store.count_staged)
     except Exception as e:
         logger.warning(f"config-status: Redis probe failed: {e}")
 
@@ -265,6 +266,7 @@ async def get_config_status(
         "rerank_score_threshold": settings.RERANK_SCORE_THRESHOLD,
         "web_search_available": bool(settings.TAVILY_API_KEY),
         "storage": __import__("app.services.storage", fromlist=["describe"]).describe(),
+        "indexing_mode": settings.INDEXING_MODE,
         "features": {
             "query_decomposition": settings.QUERY_DECOMPOSITION,
             "follow_up_suggestions": settings.FOLLOW_UP_SUGGESTIONS,

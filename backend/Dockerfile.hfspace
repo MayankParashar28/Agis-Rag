@@ -1,0 +1,43 @@
+# Hugging Face Spaces variant of the backend image. Deployed to the Space as
+# its Dockerfile (the Space keeps the backend at its root).
+#
+# Differs from the docker-compose one in four ways that Spaces requires:
+#   - listens on 7860, the port Spaces routes to
+#   - runs as UID 1000; Spaces does not give the container root
+#   - HOME and HF_HOME point somewhere that user can actually write
+#   - the BGE models are baked in at build time, so a cold start does not
+#     download ~2 GB before it can answer (and so a restart cannot fail on a
+#     network hiccup)
+FROM python:3.12-slim
+
+# tesseract: OCR for scanned PDFs and images (app/services/extractors.py).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential libpq-dev curl \
+        tesseract-ocr tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -u 1000 user
+USER user
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH \
+    PYTHONPATH=/home/user/app \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/home/user/.cache/huggingface
+WORKDIR /home/user/app
+
+# CPU-only torch: the GPU wheels are several gigabytes and unusable here.
+COPY --chown=user requirements.txt .
+RUN pip install --no-cache-dir --user \
+        torch --index-url https://download.pytorch.org/whl/cpu \
+ && pip install --no-cache-dir --user -r requirements.txt
+
+# Pull the weights during build, not on first request.
+RUN python -c "\
+from sentence_transformers import SentenceTransformer, CrossEncoder; \
+SentenceTransformer('BAAI/bge-large-en-v1.5'); \
+CrossEncoder('BAAI/bge-reranker-base')"
+
+COPY --chown=user . .
+
+EXPOSE 7860
+CMD ["./start.sh"]

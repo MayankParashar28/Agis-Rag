@@ -9,7 +9,17 @@ import {
   Alert, Card, CardHeader, EmptyState, IndexingBar, KBSelect, Modal, PageHeader, Skeleton, SkeletonRows, Spinner, StatusBadge, cx,
 } from "@/components/ui";
 
-const ACCEPTED = [".pdf", ".docx", ".txt", ".csv"];
+// Keep in sync with SUPPORTED_EXTS in backend/app/services/extractors.py.
+const ACCEPTED = [
+  ".pdf", ".docx", ".pptx", ".xlsx", ".xlsm", ".xls", ".csv", ".tsv", ".json", ".html", ".htm",
+  ".rtf", ".odt", ".ods", ".odp", ".epub", ".eml",
+  ".txt", ".md", ".markdown", ".rst", ".log", ".xml", ".yaml", ".yml", ".tex", ".ini", ".cfg",
+  ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp", ".gif",
+];
+const LEGACY: Record<string, string> = {
+  ".doc": "older Word format. Save it as .docx and upload that.",
+  ".ppt": "older PowerPoint format. Save it as .pptx and upload that.",
+};
 const MAX_MB = 50;
 
 function UploadPageContent() {
@@ -85,6 +95,10 @@ function UploadPageContent() {
       const problems: string[] = [];
       for (const file of files) {
         const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+        if (LEGACY[ext]) {
+          problems.push(`${file.name}: ${LEGACY[ext]}`);
+          continue;
+        }
         if (!ACCEPTED.includes(ext)) {
           problems.push(`${file.name}: unsupported type (${ext || "none"}).`);
           continue;
@@ -192,8 +206,8 @@ function UploadPageContent() {
         </Card>
       ) : (
         <>
-          <Card className="grid gap-4 p-5 md:grid-cols-[minmax(0,2fr)_repeat(2,minmax(0,1fr))]">
-            <KBSelect kbs={kbs} value={selectedKBId} onChange={(id) => { setPickedKB(id); setProgress({}); }} />
+          <Card className="grid grid-cols-2 gap-4 p-4 sm:p-5 md:grid-cols-[minmax(0,2fr)_repeat(2,minmax(0,1fr))]">
+            <div className="col-span-2 md:col-span-1"><KBSelect kbs={kbs} value={selectedKBId} onChange={(id) => { setPickedKB(id); setProgress({}); }} /></div>
             <div>
               <label htmlFor="chunk-size" className="label">Chunk size</label>
               <input id="chunk-size" type="number" min={100} max={8000} value={chunkSize} onChange={(e) => setChunkSize(Number(e.target.value))} className="input" />
@@ -231,7 +245,7 @@ function UploadPageContent() {
                 <p className="text-sm font-semibold text-foreground">
                   {uploads.length ? `Uploading ${uploads.length} file${uploads.length > 1 ? "s" : ""}…` : "Drop files here or click to browse"}
                 </p>
-                <p className="mt-1 text-xs text-muted-foreground">PDF, DOCX, TXT or CSV · up to {MAX_MB} MB each · several at once</p>
+                <p className="mt-1 text-xs text-muted-foreground">PDF, Word, Excel, PowerPoint, CSV, text, HTML, e-books and scanned images · up to {MAX_MB} MB each</p>
               </div>
 
               {/* URL import */}
@@ -247,7 +261,7 @@ function UploadPageContent() {
                       {importing ? <Spinner /> : null}Import
                     </button>
                   </div>
-                  <p className="text-xs text-muted-foreground">Web pages are converted to text. Links to PDF, DOCX or CSV files are downloaded as-is.</p>
+                  <p className="text-xs text-muted-foreground">Web pages are converted to text, tables included. Links to documents (PDF, Word, Excel, PowerPoint, CSV) are downloaded as-is.</p>
                 </form>
               </Card>
 

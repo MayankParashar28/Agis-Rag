@@ -6,22 +6,36 @@ from app.core.logging import logger
 redis_client: aioredis.Redis = None
 
 async def init_redis():
+    """Connect to Redis. On failure, leave redis_client as None so every
+    optional Redis feature (embedding cache, answer cache) is skipped instead
+    of each request waiting on a dead connection."""
     global redis_client
+    client = aioredis.from_url(
+        settings.REDIS_URL,
+        encoding="utf-8",
+        decode_responses=True,
+        socket_connect_timeout=5,
+        socket_timeout=5,
+    )
     try:
-        redis_client = aioredis.from_url(
-            settings.REDIS_URL,
-            encoding="utf-8",
-            decode_responses=True
-        )
-        await redis_client.ping()
-        logger.info("Successfully connected to Redis.")
+        await client.ping()
     except Exception as e:
-        logger.error(f"Failed to connect to Redis: {str(e)}")
-        raise e
+        logger.error(f"Failed to connect to Redis ({e}); Redis-backed caches are disabled.")
+        redis_client = None
+        try:
+            await client.close()
+        except Exception:
+            pass
+        raise
+    redis_client = client
+    logger.info("Successfully connected to Redis.")
 
 async def get_redis() -> AsyncGenerator[aioredis.Redis, None]:
     if redis_client is None:
-        await init_redis()
+        try:
+            await init_redis()
+        except Exception:
+            pass
     yield redis_client
 
 async def close_redis():

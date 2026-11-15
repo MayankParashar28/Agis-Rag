@@ -115,6 +115,14 @@ class Settings(BaseSettings):
 
     # --- Ingestion ----------------------------------------------------------
     MAX_UPLOAD_SIZE_MB: int = 50
+    # Document reading. Rows beyond TABLE_MAX_ROWS in one sheet/CSV are not
+    # indexed (the document says so). OCR reads scanned PDFs and images when
+    # the tesseract binary is installed.
+    TABLE_MAX_ROWS: int = 20000
+    OCR_ENABLED: bool = True
+    OCR_LANG: str = "eng"
+    OCR_MAX_PAGES: int = 200
+    PARSE_TIMEOUT_SECONDS: int = 900
     DEFAULT_CHUNK_SIZE: int = 1000
     DEFAULT_CHUNK_OVERLAP: int = 200
     # Uploaded files are staged in Redis and handed to the Celery worker, which
@@ -133,6 +141,19 @@ class Settings(BaseSettings):
     ANSWER_CACHE_MIN_CONFIDENCE: float = 60.0
     ANSWER_CACHE_TTL_SECONDS: int = 86400
     ANSWER_CACHE_MAX_ENTRIES: int = 50
+
+    # --- Indexing execution mode ---------------------------------------------
+    # "celery": a separate Celery worker indexes uploads (needs Redis as the
+    #   broker). Opt in with INDEXING_MODE=celery.
+    # "inprocess": the API indexes uploads itself in the background. No broker
+    #   or worker process needed - for single-container hosts such as
+    #   Hugging Face Spaces.
+    # Default: in-process. Celery is opt-in, because an idle Celery worker
+    # keeps polling Redis around the clock (it used most of a hosted
+    # Redis free tier from a laptop left running).
+    INDEXING_MODE: str = "inprocess"
+    # Seconds an idle Celery worker waits per Redis poll (only in celery mode).
+    CELERY_POLL_SECONDS: int = 10
 
     # --- Object storage for original files ----------------------------------
     # "local" keeps uploads on this server's disk (lost on hosts that wipe the

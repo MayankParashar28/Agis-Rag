@@ -53,6 +53,24 @@ def _key(doc_id: str) -> str:
     return f"{KEY_PREFIX}{doc_id}"
 
 
+# In-process indexing (INDEXING_MODE=inprocess) runs in the API's own process,
+# so progress can live in memory: no Redis round trip, and it works even when
+# Redis is unreachable. doc_id -> (expires_at, payload)
+_local: Dict[str, tuple] = {}
+
+
+def _use_redis() -> bool:
+    from app.core.config import settings
+    return settings.INDEXING_MODE != "inprocess"
+
+
+def _local_put(doc_id: str, payload: dict, ttl: int) -> None:
+    now = time.time()
+    for k in [k for k, (exp, _) in _local.items() if exp < now]:
+        _local.pop(k, None)
+    _local[doc_id] = (now + ttl, payload)
+
+
 def report(doc_id: str, stage: str, percent: Optional[float] = None,
            message: Optional[str] = None) -> None:
     """Record a document's current stage. Never raises: progress is cosmetic,
@@ -68,6 +86,9 @@ def report(doc_id: str, stage: str, percent: Optional[float] = None,
         "updated_at": time.time(),
     }
     ttl = FINAL_TTL_SECONDS if stage in ("done", "failed") else ACTIVE_TTL_SECONDS
+    if not _use_redis():
+        _local_put(str(doc_id), payload, ttl)
+        return
     try:
         doc_store.get_client().set(_key(str(doc_id)), json.dumps(payload), ex=ttl)
     except Exception as e:
@@ -89,6 +110,9 @@ def get_many(doc_ids: Iterable[str]) -> Dict[str, dict]:
     ids = [str(d) for d in doc_ids]
     if not ids:
         return {}
+    if not _use_redis():
+        now = time.time()
+        return {d: _local[d][1] for d in ids if d in _local and _local[d][0] >= now}
     try:
         values = doc_store.get_client().mget([_key(d) for d in ids])
     except Exception as e:
@@ -105,6 +129,9 @@ def get_many(doc_ids: Iterable[str]) -> Dict[str, dict]:
 
 
 def clear(doc_id: str) -> None:
+    _local.pop(str(doc_id), None)
+    if not _use_redis():
+        return
     try:
         doc_store.get_client().delete(_key(str(doc_id)))
     except Exception:

@@ -2,12 +2,12 @@ import uuid
 import time
 import json
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, HTTPException, status, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, case
 
 from app.core.database import get_db, SessionLocal
 from app.api.v1.auth import get_current_active_user
@@ -43,6 +43,12 @@ from app.core.logging import logger
 from app.services.llm_errors import describe_llm_failure
 
 router = APIRouter()
+from app.services.timestamps import turn_stamps as _stamps  # noqa: E402
+
+
+def _chronological():
+    # Older rows share a timestamp per turn; break the tie question-first.
+    return (Message.created_at.asc(), case((Message.sender == "user", 0), else_=1))
 
 
 @router.post("/conversations", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
@@ -122,7 +128,7 @@ async def list_messages(
         select(Message, QueryLog.rating)
         .outerjoin(QueryLog, Message.query_log_id == QueryLog.id)
         .where(Message.conversation_id == conv_id)
-        .order_by(Message.created_at.asc())
+        .order_by(*_chronological())
     )
     
     messages_out = []
@@ -176,8 +182,9 @@ async def _serve_cached_answer(db, query_in: ChatQuery, user_id: uuid.UUID, hit:
     citations = hit.get("citations", [])
     confidence = float(hit.get("confidence", 0.0))
     log_id = uuid.uuid4()
-    db.add(Message(conversation_id=query_in.conversation_id, sender="user", content=query_in.query))
-    db.add(Message(conversation_id=query_in.conversation_id, sender="assistant", content=answer,
+    asked_at, answered_at = _stamps(total_start)
+    db.add(Message(conversation_id=query_in.conversation_id, sender="user", content=query_in.query, created_at=asked_at))
+    db.add(Message(conversation_id=query_in.conversation_id, sender="assistant", content=answer, created_at=answered_at,
                    citations=citations, latency=latency,
                    retrieval_score=sum(c.get("score", 0.0) for c in citations) / len(citations) if citations else 0.0,
                    query_log_id=log_id))
@@ -230,7 +237,7 @@ async def export_conversation(
     conv = (await db.execute(select(Conversation).where(Conversation.id == conv_id, Conversation.user_id == current_user.id))).scalar_one_or_none()
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found.")
-    msgs = (await db.execute(select(Message).where(Message.conversation_id == conv_id).order_by(Message.created_at.asc()))).scalars().all()
+    msgs = (await db.execute(select(Message).where(Message.conversation_id == conv_id).order_by(*_chronological()))).scalars().all()
     kb_name = None
     if conv.kb_id:
         kb = (await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == conv.kb_id))).scalar_one_or_none()
@@ -369,12 +376,14 @@ async def stream_agentic_rag(
             user_msg = Message(
                 conversation_id=query_in.conversation_id,
                 sender="user",
-                content=query_in.query
+                content=query_in.query,
+                created_at=_stamps(total_start)[0],
             )
             assistant_msg = Message(
                 conversation_id=query_in.conversation_id,
                 sender="assistant",
                 content=no_info_msg,
+                created_at=_stamps(total_start)[1],
                 citations=[],
                 latency=time.time() - total_start,
                 retrieval_score=0.0,
@@ -535,8 +544,9 @@ async def stream_agentic_rag(
         state["citations"] = citations
         state["latency_breakdown"]["generation"] = gen_latency
         
-        # Step 5: Fast Heuristic Evaluation for SSE Response & Async Deep Evaluation
-        yield f"data: {json.dumps({'event': 'status', 'message': 'Processing response metadata...'})}\n\n"
+        # Step 5: Fast Heuristic Evaluation for SSE Response & Async Deep Evaluation.
+        # (No status event here: the answer is already on screen, and a
+        # "Processing response metadata..." line made it look unfinished.)
         
         total_latency = time.time() - total_start
         avg_retrieval_score = sum(c.get("similarity_score", 0.0) for c in state["reranked_chunks"]) / len(state["reranked_chunks"]) if state["reranked_chunks"] else 0.0
@@ -557,7 +567,8 @@ async def stream_agentic_rag(
         user_msg = Message(
             conversation_id=query_in.conversation_id,
             sender="user",
-            content=query_in.query
+            content=query_in.query,
+            created_at=_stamps(total_start)[0],
         )
         # Generate Log ID first to tie Message to QueryLog
         log_id = uuid.uuid4()
@@ -566,6 +577,7 @@ async def stream_agentic_rag(
             conversation_id=query_in.conversation_id,
             sender="assistant",
             content=full_response_text,
+            created_at=_stamps(total_start)[1],
             citations=citations,
             latency=total_latency,
             retrieval_score=avg_retrieval_score,

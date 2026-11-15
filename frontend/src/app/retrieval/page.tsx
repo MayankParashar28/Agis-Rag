@@ -18,7 +18,7 @@ interface TraceChunk {
 }
 
 export default function RetrievalPage() {
-  const allowed = useRequireAuth();
+  const allowed = useRequireAuth({ adminOnly: true });
   const kbsQuery = useApi<KnowledgeBase[]>(allowed ? "/knowledge-bases" : null, api.listKBs);
   const kbs = kbsQuery.data ?? [];
   const [pickedKB, setPickedKB] = useState("");
@@ -83,7 +83,7 @@ export default function RetrievalPage() {
       {error && <Alert tone="danger">{error}</Alert>}
 
       {latencies && (
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4">
           <StatCard label="Hybrid retrieval" value={`${latencies.retrieval_ms} ms`} icon={Clock} />
           <StatCard label="Reranking" value={`${latencies.rerank_ms} ms`} icon={TrendingDown} />
           <StatCard label="Total" value={`${latencies.total_ms} ms`} icon={Cpu} />

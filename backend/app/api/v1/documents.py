@@ -21,6 +21,7 @@ from app.models.auth import User
 from app.models.knowledge import KnowledgeBase, Document, DocumentChunk
 from app.schemas.knowledge import DocumentResponse, DocumentChunkResponse
 from app.services.parser import document_parser
+from app.services.extractors import LEGACY_HINTS, SUPPORTED_EXTS, sniff_problem
 from app.services.indexer import document_indexer
 from app.services import doc_store, progress, audit
 from app.services import storage as object_storage
@@ -46,6 +47,14 @@ async def _dispatch_processing(doc_id: str, file_path: str, filename: str,
     DOC_HANDOVER_MAX_MB skip Redis (hosted plans cap request size); the worker
     then reads the file from disk or fetches it from object storage.
     """
+    from app.services import ingest
+    if ingest.is_inprocess():
+        # Single-container mode: index right here in the background. No Redis
+        # hand-off is needed because the file is already on this disk.
+        progress.report(doc_id, "queued")
+        ingest.submit_inprocess(doc_id, file_path, filename, chunk_size, chunk_overlap, storage_key=storage_key)
+        return
+
     redis_key = None
     try:
         small_enough = os.path.getsize(file_path) <= settings.DOC_HANDOVER_MAX_MB * 1024 * 1024
@@ -281,32 +290,24 @@ async def upload_document(
         )
 
     # 2. Verify file extension
-    ext = os.path.splitext(file.filename)[1].lower()
-    if ext not in [".pdf", ".docx", ".txt", ".csv"]:
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext in LEGACY_HINTS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=LEGACY_HINTS[ext])
+    if ext not in SUPPORTED_EXTS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported file type '{ext}'. Allowed: .pdf, .docx, .txt, .csv"
+            detail=f"Unsupported file type '{ext or 'none'}'. Supported: {', '.join(SUPPORTED_EXTS)}"
         )
 
-    # 2b. Enforce max file size (50 MB)
+    # 2b. Enforce max file size
     MAX_FILE_SIZE_BYTES = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
-    # Read file size from content-length header or by seeking
     if file.size and file.size > MAX_FILE_SIZE_BYTES:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"File too large. Maximum allowed size is {settings.MAX_UPLOAD_SIZE_MB} MB."
         )
-
-    # 2c. Validate content-type matches extension to prevent disguised uploads
-    ALLOWED_CONTENT_TYPES = {
-        ".pdf": ["application/pdf"],
-        ".docx": ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
-        ".txt": ["text/plain", "application/octet-stream"],
-        ".csv": ["text/csv", "text/plain", "application/octet-stream"],
-    }
-    if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES.get(ext, []):
-        logger.warning(f"Upload content-type mismatch: ext={ext}, content_type={file.content_type}, filename={file.filename}")
-        # Allow it with a warning rather than blocking (browsers are inconsistent with MIME detection)
+    # Browsers report MIME types inconsistently, so the file's own signature
+    # is checked after saving instead (see 3a).
 
     # 3. Save file to permanent uploads directory, hashing as we go and
     #    enforcing the size cap even when the client sent no Content-Length.
@@ -333,6 +334,13 @@ async def upload_document(
     except Exception as e:
         logger.error(f"Failed to save file locally: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to save uploaded file.")
+
+    # 3a. Reject renamed, damaged or password-protected files now, with a
+    #     clear reason, rather than as a failed document a minute later.
+    problem = await asyncio.to_thread(sniff_problem, dest_path, ext)
+    if problem:
+        os.remove(dest_path)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=problem)
 
     # 3b. Skip exact duplicates: same bytes already indexed in this KB.
     sha256 = hasher.hexdigest()

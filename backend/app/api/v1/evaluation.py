@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.database import get_db
-from app.api.v1.auth import get_current_active_user
+from app.api.v1.auth import get_current_active_user, get_current_admin_user
 from app.models.auth import User
 from app.models.knowledge import KnowledgeBase
 from app.models.metrics import Evaluation
@@ -17,7 +17,9 @@ from app.models.metrics import GoldenQuestion
 from pydantic import BaseModel
 from typing import Optional
 
-router = APIRouter()
+# Admin-only: evaluation runs and retrieval debugging spend LLM quota and
+# expose pipeline internals, so members are refused on the server too.
+router = APIRouter(dependencies=[Depends(get_current_admin_user)])
 
 @router.post("/run", response_model=RagasEvaluationResponse)
 async def trigger_ragas_evaluation(
@@ -163,7 +165,8 @@ async def suggest_golden_questions(body: GoldenSuggestIn, db: AsyncSession = Dep
                                    current_user: User = Depends(get_current_active_user)) -> Any:
     """Draft questions from the KB's own passages; nothing is saved until added."""
     await _owned_kb(db, body.kb_id, current_user)
-    return {"items": await golden.suggest_questions(db, body.kb_id, max(1, min(body.n, 10)))}
+    items, reason, method = await golden.suggest_questions(db, body.kb_id, max(1, min(body.n, 10)))
+    return {"items": items, "reason": reason, "method": method}
 
 
 @router.post("/golden/run")

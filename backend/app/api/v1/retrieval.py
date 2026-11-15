@@ -5,13 +5,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.database import get_db
-from app.api.v1.auth import get_current_active_user
+from app.api.v1.auth import get_current_active_user, get_current_admin_user
 from app.models.auth import User
 from app.models.knowledge import KnowledgeBase
 from app.services.search import retrieval_pipeline
 from pydantic import BaseModel
 
-router = APIRouter()
+# Admin-only: evaluation runs and retrieval debugging spend LLM quota and
+# expose pipeline internals, so members are refused on the server too.
+router = APIRouter(dependencies=[Depends(get_current_admin_user)])
 
 class DebugQuery(BaseModel):
     kb_id: uuid.UUID
