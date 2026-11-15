@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { Database, Globe, HardDrive, Layers, Search, ServerCog, Sparkles, User as UserIcon } from "lucide-react";
-import { api, authStorage, KnowledgeBase } from "@/lib/api";
+import { api, authStorage, KnowledgeBase, UsageToday } from "@/lib/api";
+import { UsageMeter, compactNumber, resetsIn } from "@/components/UsageMeter";
 import { errorMessage, useApi, useCurrentUser, useRequireAuth } from "@/lib/hooks";
 import { Alert, Card, CardHeader, PageHeader, Skeleton, Spinner, StatCard, cx } from "@/components/ui";
 
@@ -61,6 +62,8 @@ export default function SettingsPage() {
 
   const statusQuery = useApi<ConfigStatus>(allowed ? "/analytics/config-status" : null, api.getConfigStatus);
   const kbsQuery = useApi<KnowledgeBase[]>(allowed ? "/knowledge-bases" : null, api.listKBs);
+  const usageQuery = useApi<UsageToday>(allowed ? "/auth/me/usage" : null, api.getMyUsage);
+  const usage = usageQuery.data;
   const status = statusQuery.data;
 
   // Form fields start from the stored profile and only diverge once edited.
@@ -121,6 +124,34 @@ export default function SettingsPage() {
             <button className="btn btn-primary" disabled={saving || !dirty}>{saving && <Spinner />}Save profile</button>
           </div>
         </form>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Your usage today"
+          description={usage ? `Resets at midnight UTC, in ${resetsIn(usage.resets_at)}.` : "Questions and AI tokens used since midnight UTC."}
+        />
+        <div className="space-y-4 p-5">
+          {usageQuery.error ? (
+            <Alert tone="warning">{usageQuery.error}</Alert>
+          ) : !usage ? (
+            <>
+              <Skeleton className="h-9 w-full" />
+              <Skeleton className="h-9 w-full" />
+            </>
+          ) : (
+            <>
+              {usage.blocked && (
+                <Alert tone="warning">You have reached today&apos;s limit. Chat will work again after the reset, or ask an administrator for a higher limit.</Alert>
+              )}
+              <UsageMeter label="Questions" used={usage.questions} limit={usage.question_limit} />
+              <UsageMeter label="AI tokens" used={usage.tokens} limit={usage.token_limit} format={compactNumber} />
+              {(usage.question_limit === 0 && usage.token_limit === 0) && (
+                <p className="text-xs text-muted-foreground">Your account has no daily limit.</p>
+              )}
+            </>
+          )}
+        </div>
       </Card>
 
       {isAdmin && (

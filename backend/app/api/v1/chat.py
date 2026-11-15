@@ -30,7 +30,7 @@ from app.services.agent import (
     synthesize_context_fallback
 )
 from app.services.memory import chat_memory
-from app.services import answer_cache
+from app.services import answer_cache, table_qa
 from app.services.guard import build_context, SOURCE_RULES
 from app.services import llm as llm_helper
 from app.services import audit
@@ -164,6 +164,10 @@ def build_citation(idx: int, chunk: Dict[str, Any]) -> Dict[str, Any]:
         citation["doc_id"] = str(chunk["doc_id"])
     if chunk.get("chunk_id"):
         citation["chunk_id"] = str(chunk["chunk_id"])
+    if chunk.get("kind") == "calculation":
+        citation["kind"] = "calculation"
+        citation["sql"] = chunk.get("sql")
+        citation["snippet"] = (chunk.get("content") or "")[:2000]
     # Carry the source URL for web results. Without it a web citation names a
     # page the reader has no way to open or check.
     if isinstance(source, str) and source.startswith(("http://", "https://")):
@@ -306,6 +310,10 @@ async def stream_agentic_rag(
             yield "data: [DONE]\n\n"
             return
         
+        # Calculation questions over tables ("total sales in March") run as
+        # an exact SQL query in parallel with retrieval; see table_qa.
+        calc_task = asyncio.create_task(table_qa.calculate(kb_id, query_in.query, query_in.document_ids))
+
         # Run classification
         class_res = await classify_query_node(state)
         state.update(class_res)
@@ -366,6 +374,18 @@ async def stream_agentic_rag(
                 f"{threshold}; proceeding with the top {len(relevant_chunks)} "
                 f"as a weak match rather than reporting no information."
             )
+
+        calc = None
+        try:
+            calc = await asyncio.wait_for(calc_task, timeout=45)
+        except Exception as e:
+            logger.warning(f"Table calculation did not finish: {e}")
+        if calc:
+            yield f"data: {json.dumps({'event': 'status', 'message': 'Calculated the answer from the table data...'})}\n\n"
+            yield f"data: {json.dumps(calc.as_event(), default=str)}\n\n"
+            relevant_chunks = [calc.as_chunk()] + relevant_chunks[: max(0, settings.RERANK_TOP_N - 1)]
+            usage_total.add(calc.usage)
+            weak_match = False
 
         if not relevant_chunks:
             no_info_msg = "I could not find any relevant information in the uploaded documents to answer your question."
@@ -436,7 +456,9 @@ async def stream_agentic_rag(
             "2. Do NOT use any of your own outside or general training knowledge under any circumstances.\n"
             "3. If the sources do not contain the exact facts to answer the question, state clearly: 'I cannot find the answer in the provided documents.'\n"
             "4. Cite your sources exactly when presenting facts (e.g. at the end of the sentence use [Source X]).\n"
-            "5. When a source contains a Markdown table, keep the relevant rows as a Markdown table in your answer instead of flattening them into prose.\n"
+            "5. When a source contains a Markdown table, keep the relevant rows as a Markdown table in your answer instead of flattening them into prose. "
+            "A source that begins with 'Exact calculation' was computed by a database query over the complete table: use its figures as the answer, "
+            "do not re-add rows from other sources, and say briefly that the figure was calculated from the data.\n"
             f"{MODE_INSTRUCTIONS[mode](relevant_chunks)}\n\n"
             f"{SOURCE_RULES}\n\n"
             f"Sources:\n{context_str}"
@@ -712,6 +734,16 @@ async def send_message(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Conversation not found or access denied."
+        )
+
+    # 2. Daily usage limit (questions and tokens), checked before any AI call.
+    from app.services.usage import friendly_wait, usage_today
+    usage = await usage_today(db, current_user)
+    if usage.blocked_reason:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"{usage.blocked_reason} It resets at midnight UTC, in {friendly_wait()}. "
+                   "Ask an administrator if you need a higher limit.",
         )
 
     # Stream the agentic RAG response

@@ -39,6 +39,7 @@ async def lifespan(app: FastAPI):
     # Postgres, the source of truth, still holds every chunk. Runs in the
     # background: it must never hold up the port binding.
     asyncio.create_task(_heal_vector_index())
+    asyncio.create_task(_backfill_tables())
     logger.info(f"Startup sequence completed (indexing mode: {settings.INDEXING_MODE}).")
     if settings.INDEXING_MODE == "celery" and any(h in settings.REDIS_URL for h in ("upstash.io", "redislabs.com", "redis-cloud.com")):
         logger.warning(
@@ -53,6 +54,16 @@ async def lifespan(app: FastAPI):
     logger.info("FastAPI service shutting down...")
     await close_redis()
     logger.info("Shutdown sequence completed.")
+
+
+async def _backfill_tables() -> None:
+    """One-off: keep table rows for documents indexed before exact table
+    answers existed, so calculations work on them without re-indexing."""
+    try:
+        from app.services.table_qa import backfill_tables
+        await backfill_tables()
+    except Exception as e:
+        logger.error(f"Table backfill skipped: {e}")
 
 
 async def _heal_vector_index() -> None:

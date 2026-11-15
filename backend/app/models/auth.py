@@ -1,8 +1,9 @@
 import uuid
-from sqlalchemy import String, Boolean, DateTime, func
+from sqlalchemy import String, Boolean, DateTime, Integer, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 from datetime import datetime
+from typing import Optional
 
 class User(Base):
     __tablename__ = "users"
@@ -15,6 +16,10 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Daily usage limits. None = the server default (DAILY_QUESTION_LIMIT /
+    # DAILY_TOKEN_LIMIT), 0 = unlimited, a positive number = this user's own.
+    daily_question_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    daily_token_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Relationships
     knowledge_bases = relationship("KnowledgeBase", back_populates="user", cascade="all, delete-orphan")

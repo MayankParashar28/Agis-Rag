@@ -48,6 +48,7 @@ class Document(Base):
     # Relationships
     knowledge_base = relationship("KnowledgeBase", back_populates="documents")
     chunks = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")
+    tables = relationship("DocumentTable", back_populates="document", cascade="all, delete-orphan")
 
 
 class DocumentChunk(Base):
@@ -68,3 +69,22 @@ class DocumentChunk(Base):
 
     # Relationships
     document = relationship("Document", back_populates="chunks")
+
+
+class DocumentTable(Base):
+    """A table found in a document (a spreadsheet sheet, a CSV, a table in a
+    PDF or Word file), kept as rows so questions like "total sales in March"
+    can be answered by exact calculation instead of by reading passages."""
+    __tablename__ = "document_tables"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    doc_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    kb_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)       # "Sheet: Orders", "Table 2 (page 4)"
+    page_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    columns: Mapped[list] = mapped_column(JSON, nullable=False)          # header names
+    rows: Mapped[list] = mapped_column(JSON, nullable=False)             # list of rows (lists of strings)
+    n_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    document = relationship("Document", back_populates="tables")

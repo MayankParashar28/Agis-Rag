@@ -123,6 +123,16 @@ class Settings(BaseSettings):
     OCR_LANG: str = "eng"
     OCR_MAX_PAGES: int = 200
     PARSE_TIMEOUT_SECONDS: int = 900
+    # Exact answers from tables: calculation questions are answered with a
+    # read-only SQL query over the stored tables (app/services/table_qa.py).
+    TABLE_QA_ENABLED: bool = True
+    TABLE_QA_MAX_TABLES: int = 5
+    TABLE_QA_MAX_CELLS: int = 600000     # per document
+    # Per-user daily usage limits (reset at 00:00 UTC). 0 = unlimited.
+    # Admins can set a different limit for each user on the Users page.
+    DAILY_QUESTION_LIMIT: int = 100
+    DAILY_TOKEN_LIMIT: int = 300000
+    ADMINS_UNLIMITED: bool = True
     DEFAULT_CHUNK_SIZE: int = 1000
     DEFAULT_CHUNK_OVERLAP: int = 200
     # Uploaded files are staged in Redis and handed to the Celery worker, which
