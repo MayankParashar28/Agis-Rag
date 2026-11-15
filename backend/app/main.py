@@ -40,6 +40,12 @@ async def lifespan(app: FastAPI):
     # background: it must never hold up the port binding.
     asyncio.create_task(_heal_vector_index())
     logger.info(f"Startup sequence completed (indexing mode: {settings.INDEXING_MODE}).")
+    if settings.INDEXING_MODE == "celery" and any(h in settings.REDIS_URL for h in ("upstash.io", "redislabs.com", "redis-cloud.com")):
+        logger.warning(
+            "INDEXING_MODE=celery with a hosted Redis: an idle Celery worker polls Redis "
+            f"every {settings.CELERY_POLL_SECONDS}s around the clock and counts against the "
+            "provider's command quota. Use INDEXING_MODE=inprocess, or a local Redis for development."
+        )
 
     yield
     

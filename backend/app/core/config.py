@@ -136,11 +136,16 @@ class Settings(BaseSettings):
 
     # --- Indexing execution mode ---------------------------------------------
     # "celery": a separate Celery worker indexes uploads (needs Redis as the
-    #   broker; this is what docker-compose runs).
+    #   broker). Opt in with INDEXING_MODE=celery.
     # "inprocess": the API indexes uploads itself in the background. No broker
     #   or worker process needed - for single-container hosts such as
     #   Hugging Face Spaces.
-    INDEXING_MODE: str = "celery"
+    # Default: in-process. Celery is opt-in, because an idle Celery worker
+    # keeps polling Redis around the clock (it used most of a hosted
+    # Redis free tier from a laptop left running).
+    INDEXING_MODE: str = "inprocess"
+    # Seconds an idle Celery worker waits per Redis poll (only in celery mode).
+    CELERY_POLL_SECONDS: int = 10
 
     # --- Object storage for original files ----------------------------------
     # "local" keeps uploads on this server's disk (lost on hosts that wipe the

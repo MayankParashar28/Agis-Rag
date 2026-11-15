@@ -36,11 +36,26 @@ celery_app.conf.update(
         "socket_keepalive": True,
         "retry_on_timeout": True,
         "max_connections": 10,
+        # An idle worker waits for jobs with BRPOP. Kombu's default wait is
+        # 1 s, i.e. ~86,400 Redis commands a day per idle worker, which
+        # alone used most of a hosted Redis free tier (500k commands/month).
+        # BRPOP still returns the instant a job arrives, so a longer wait
+        # costs no latency - only fewer empty round trips.
+        "polling_interval": settings.CELERY_POLL_SECONDS,
+        "health_check_interval": 120,
     },
+    # Remote control (celery inspect/control), task events and the
+    # gossip/mingle/heartbeat chatter between workers all add Redis traffic
+    # this app never uses.
+    worker_enable_remote_control=False,
+    worker_send_task_events=False,
+    task_send_sent_event=False,
     # Keep Redis clean: any task results/state that are stored expire instead
     # of piling up as celery-task-meta-* keys.
     result_expires=settings.CELERY_RESULT_EXPIRES_SECONDS,
-    redis_backend_health_check_interval=30,
+    # Task results are not stored (ignore_result), so the result backend's
+    # periodic health check is pure overhead.
+    redis_backend_health_check_interval=0,
     result_backend_transport_options={
         "socket_timeout": 30,
         "socket_connect_timeout": 30,
