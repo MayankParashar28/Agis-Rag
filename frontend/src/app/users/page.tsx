@@ -75,7 +75,7 @@ export default function UserManagementPage() {
           <EmptyState icon={Users} title="No users found" />
         ) : (
           <div className="overflow-x-auto">
-            <table className="table">
+            <table className="table table-stack">
               <thead>
                 <tr>
                   <th>User</th>
@@ -99,10 +99,10 @@ export default function UserManagementPage() {
                         </div>
                       </div>
                     </td>
-                    <td><span className={cx("badge", u.role === "admin" ? "badge-accent" : "badge-neutral")}>{u.role === "admin" ? "Admin" : "Member"}</span></td>
-                    <td><span className={cx("badge", u.is_active ? "badge-success" : "badge-danger")}>{u.is_active ? "Active" : "Suspended"}</span></td>
-                    <td className="whitespace-nowrap text-muted-foreground">{new Date(u.created_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}</td>
-                    <td>
+                    <td data-label="Role"><span className={cx("badge", u.role === "admin" ? "badge-accent" : "badge-neutral")}>{u.role === "admin" ? "Admin" : "Member"}</span></td>
+                    <td data-label="Status"><span className={cx("badge", u.is_active ? "badge-success" : "badge-danger")}>{u.is_active ? "Active" : "Suspended"}</span></td>
+                    <td data-label="Joined" className="whitespace-nowrap text-muted-foreground">{new Date(u.created_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}</td>
+                    <td data-label="Actions">
                       <div className="flex items-center justify-end gap-1.5">
                         {busyId === u.id ? (
                           <Spinner className="mr-2 text-muted-foreground" />

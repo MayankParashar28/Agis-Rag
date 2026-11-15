@@ -25,13 +25,13 @@ export function ModeSelector({ value, onChange, selectedDocs }: { value: AnswerM
             onClick={() => onChange(m.id)}
             title={needsDocs ? `${m.hint}. Select ${2 - selectedDocs} more document${2 - selectedDocs > 1 ? "s" : ""}.` : m.hint}
             className={cx(
-              "flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold transition-colors",
+              "flex h-8 items-center gap-1.5 rounded-full px-2 text-xs font-semibold transition-colors sm:h-7 sm:px-2.5",
               active ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground",
               needsDocs && !active && "opacity-60"
             )}
           >
             <Icon className="h-3.5 w-3.5" />
-            <span className="hidden md:inline">{m.label}</span>
+            <span className="sr-only md:not-sr-only">{m.label}</span>
           </button>
         );
       })}

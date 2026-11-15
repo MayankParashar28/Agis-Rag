@@ -315,6 +315,56 @@ body {
   }
 }
 
+/* ---------- Mobile ---------- */
+/* Finger-sized hit areas on touch screens; desktop keeps the compact sizes. */
+@media (pointer: coarse) {
+  .icon-btn { width: 2.5rem; height: 2.5rem; }
+  .btn-sm { height: 2.25rem; }
+  /* Inline [n] markers stay small in the text but get a finger-sized hit area. */
+  .cite-ref { position: relative; }
+  .cite-ref::after { content: ""; position: absolute; inset: -10px -6px; }
+}
+
+/*
+ * Tables become stacked cards on phones: each row is a card and each cell
+ * shows its column name (from data-label) beside the value. Wide tables
+ * otherwise hide their last columns - usually the actions - off-screen.
+ */
+@media (max-width: 639px) {
+  .table-stack thead { display: none; }
+  .table-stack, .table-stack tbody { display: block; width: 100%; }
+  .table-stack tr {
+    display: block;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .table-stack tbody tr:last-child { border-bottom: 0; }
+  .table-stack td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.3rem 0 !important;
+    border: 0 !important;
+    text-align: right !important;
+    max-width: none !important;
+    white-space: normal;
+  }
+  .table-stack tbody tr:hover td { background: transparent; }
+  .table-stack td[data-label]::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--muted-foreground);
+    text-align: left;
+  }
+  /* The first cell is the card's title: full width, left aligned. */
+  .table-stack td:first-child { justify-content: flex-start; text-align: left !important; padding-bottom: 0.5rem !important; }
+  .table-stack td:first-child::before { display: none; }
+  .table-stack td > * { min-width: 0; }
+}
+
 /* Highlight used by the citation viewer */
 mark.cite-mark {
   background: var(--accent-soft);

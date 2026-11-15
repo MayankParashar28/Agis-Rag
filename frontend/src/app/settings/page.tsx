@@ -99,7 +99,7 @@ export default function SettingsPage() {
       <PageHeader eyebrow="Account" title="Settings" description="Your profile and, for admins, the health of every backing service." />
       {notice && <Alert tone={notice.tone} onClose={() => setNotice(null)}>{notice.text}</Alert>}
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4">
         <StatCard label="Knowledge bases" value={kbsQuery.loading ? <Skeleton className="h-7 w-10" /> : (kbsQuery.data?.length ?? "—")} icon={Database} />
         <StatCard label="Role" value={isAdmin ? "Admin" : "Member"} icon={UserIcon} />
         <StatCard label="Member since" value={<span className="text-base">{joined}</span>} />

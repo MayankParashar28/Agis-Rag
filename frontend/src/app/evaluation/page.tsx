@@ -115,7 +115,7 @@ export default function EvaluationPage() {
             </Card>
           ) : (
             <>
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
                 {METRICS.map((m) => {
                   const v = latest?.[m.key];
                   return <StatCard key={m.key} label={m.name} value={v == null ? "—" : `${((v as number) * 100).toFixed(1)}%`} hint="Latest audit" />;

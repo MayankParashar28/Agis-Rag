@@ -33,6 +33,7 @@ import CitationViewer from "@/components/chat/CitationViewer";
 import { DocumentPicker, KBPicker } from "@/components/chat/SourcePicker";
 import { api, authStorage, AnswerMode, Citation, KnowledgeBase, Conversation, Message, UserNote, DocumentInfo } from "@/lib/api";
 import { ModeSelector } from "@/components/chat/ModeSelector";
+import { toast } from "@/components/ui";
 import { Download, Printer } from "lucide-react";
 
 function ChatPageContent() {
@@ -63,6 +64,8 @@ function ChatPageContent() {
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [subQuestions, setSubQuestions] = useState<string[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
+  const [pinningId, setPinningId] = useState<string | null>(null);
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => new Set());
   const [exporting, setExporting] = useState(false);
   
   // Diagnostics comparison (pre/post rerank vectors)
@@ -129,19 +132,21 @@ function ChatPageContent() {
   };
 
   const handleSaveMessageToNotes = async (msg: Message) => {
-    if (!selectedKBId) return;
+    if (!selectedKBId || pinningId) return;
+    setPinningId(msg.id);
     try {
-      const summaryTitle = msg.content.substring(0, 30).trim() + "...";
-      await api.createUserNote({
-        kb_id: selectedKBId,
-        title: `Pinned response: ${summaryTitle}`,
-        content: msg.content
-      });
-      alert("Pinned to Sticky Notes successfully!");
-      await loadNotes();
-    } catch {
-      
-      alert("Failed to pin note.");
+      // Title from the first line of the answer, without Markdown or [Source N].
+      const firstLine = msg.content
+        .split("\n").map((l) => l.replace(/[#>*_`|]/g, "").replace(/\[Source\s+\d+\]/gi, "").trim()).find(Boolean) || "Answer";
+      const title = firstLine.length > 60 ? `${firstLine.slice(0, 60).trim()}…` : firstLine;
+      const note = await api.createUserNote({ kb_id: selectedKBId, title, content: msg.content });
+      setNotes((prev) => [note, ...prev.filter((n) => n.id !== note.id)]);
+      setPinnedIds((prev) => new Set(prev).add(msg.id));
+      toast("Pinned to Sticky Notes", "success", { label: "Open", onClick: () => setShowNotesPanel(true) });
+    } catch (e) {
+      toast(`Could not pin: ${e instanceof Error && e.message ? e.message : "please try again"}`, "danger");
+    } finally {
+      setPinningId(null);
     }
   };
 
@@ -165,7 +170,7 @@ function ChatPageContent() {
       await loadNotes();
     } catch {
       
-      alert("Failed to save note.");
+      toast("Could not save the note. Please try again.", "danger");
     }
   };
 
@@ -196,7 +201,7 @@ function ChatPageContent() {
       setSynthesisText(res.synthesis);
     } catch {
       
-      alert("Failed to synthesize notes.");
+      toast("Could not write the draft. Please try again.", "danger");
     } finally {
       setSynthesisLoading(false);
     }
@@ -536,7 +541,7 @@ function ChatPageContent() {
       const title = conversations.find((c) => c.id === activeConvId)?.title || "conversation";
       await api.exportConversation(activeConvId, title);
     } catch {
-      alert("Export failed. Please try again.");
+      toast("Export failed. Please try again.", "danger");
     } finally {
       setExporting(false);
       setExportOpen(false);
@@ -646,7 +651,7 @@ function ChatPageContent() {
   };
 
   return (
-    <div className="h-[calc(100dvh-5rem)] md:h-full flex gap-3 md:gap-4 overflow-hidden relative">
+    <div className="h-[calc(100dvh-3.5rem)] md:h-full flex gap-3 md:gap-4 overflow-hidden relative">
       {/* MOBILE LEFT: Conversation sidebar drawer */}
       {showMobileSidebar && (
         <>
@@ -666,17 +671,18 @@ function ChatPageContent() {
       </div>
 
       {/* RIGHT: Chat Window */}
-      <div className="flex-1 glass border border-card-border rounded-[14px] flex flex-col justify-between overflow-hidden">
+      <div className="flex-1 min-w-0 bg-surface sm:glass sm:border sm:border-card-border sm:rounded-[14px] flex flex-col justify-between overflow-hidden">
         {/* Top Header */}
-        <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-card-border/50 flex flex-wrap gap-3 justify-between items-center bg-card/25">
-          <div className="flex items-center space-x-2 sm:space-x-3">
+        <div className="px-3 sm:px-6 py-2.5 sm:py-4 border-b border-card-border/50 flex flex-wrap gap-2 sm:gap-3 justify-between items-center bg-card/25">
+          <div className="flex w-full min-w-0 items-center gap-1.5 sm:w-auto sm:gap-3">
             <button
               onClick={() => setShowMobileSidebar(true)}
-              className="lg:hidden p-2 -ml-2 text-text-muted hover:text-foreground hover:bg-card-border/30 rounded-xl"
+              className="lg:hidden icon-btn -ml-1 shrink-0"
+              aria-label="Conversations"
             >
               <Menu className="w-5 h-5" />
             </button>
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:flex-wrap sm:gap-2">
               <KBPicker
                 kbs={kbs}
                 value={selectedKBId}
@@ -697,40 +703,40 @@ function ChatPageContent() {
           </div>
 
           {/* Center Tab Selectors */}
-          <div className="flex bg-background/50 border border-card-border/50 p-1 rounded-xl order-3 w-full sm:w-auto sm:order-2 justify-center">
+          <div className="flex shrink-0 bg-background/50 border border-card-border/50 p-0.5 sm:p-1 rounded-xl order-2 justify-center">
             <button
               onClick={() => setActiveMainTab("chat")}
-              className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 cursor-pointer flex-1 sm:flex-none justify-center ${
+              className={`flex h-8 items-center space-x-1.5 px-2.5 sm:h-auto sm:px-3.5 sm:py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 cursor-pointer justify-center ${
                 activeMainTab === "chat"
                   ? "bg-primary text-background shadow-sm"
                   : "text-text-muted hover:text-foreground"
               }`}
             >
               <MessageSquare className="w-3.5 h-3.5" />
-              <span>Chat Console</span>
+              <span className="sr-only sm:not-sr-only">Chat Console</span>
             </button>
             <button
               onClick={() => setActiveMainTab("guide")}
-              className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 cursor-pointer flex-1 sm:flex-none justify-center ${
+              className={`flex h-8 items-center space-x-1.5 px-2.5 sm:h-auto sm:px-3.5 sm:py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 cursor-pointer justify-center ${
                 activeMainTab === "guide"
                   ? "bg-primary text-background shadow-sm"
                   : "text-text-muted hover:text-foreground"
               }`}
             >
               <BookOpen className="w-3.5 h-3.5" />
-              <span>Notebook Guide</span>
+              <span className="sr-only sm:not-sr-only">Notebook Guide</span>
             </button>
           </div>
 
           {/* Right side controls */}
-          <div className="flex items-center space-x-2 sm:space-x-2.5 order-2 sm:order-3">
+          <div className="flex min-w-0 items-center gap-1 sm:gap-2.5 order-3 ml-auto">
             <ModeSelector value={mode} onChange={setMode} selectedDocs={selectedDocIds.length} />
             {/* Export */}
             <div className="relative">
               <button
                 onClick={() => setExportOpen((v) => !v)}
                 disabled={!activeConvId || messages.length === 0}
-                className="flex items-center space-x-1.5 px-2 sm:px-3 py-1.5 rounded-full text-xs font-semibold border bg-background text-text-muted border-card-border hover:text-foreground disabled:opacity-40 cursor-pointer"
+                className="flex h-8 items-center space-x-1.5 px-2 sm:h-auto sm:px-3 sm:py-1.5 rounded-full text-xs font-semibold border bg-background text-text-muted border-card-border hover:text-foreground disabled:opacity-40 cursor-pointer"
                 title="Export conversation"
                 aria-haspopup="menu"
                 aria-expanded={exportOpen}
@@ -757,7 +763,7 @@ function ChatPageContent() {
             {/* Notes Panel Toggle */}
             <button
               onClick={() => setShowNotesPanel(!showNotesPanel)}
-              className={`flex items-center space-x-1.5 px-2 sm:px-3 py-1.5 rounded-full text-xs font-semibold border transition-all duration-200 cursor-pointer ${
+              className={`flex h-8 items-center space-x-1.5 px-2 sm:h-auto sm:px-3 sm:py-1.5 rounded-full text-xs font-semibold border transition-all duration-200 cursor-pointer ${
                 showNotesPanel
                   ? "bg-accent/15 text-accent border-accent/35"
                   : "bg-background text-text-muted border-card-border hover:text-foreground"
@@ -772,7 +778,7 @@ function ChatPageContent() {
             {/* Web search toggle */}
             <button
               onClick={() => setWebSearchEnabled(!webSearchEnabled)}
-              className={`flex items-center space-x-1.5 px-2 sm:px-3 py-1.5 rounded-full text-xs font-semibold border transition-all duration-200 cursor-pointer ${
+              className={`flex h-8 items-center space-x-1.5 px-2 sm:h-auto sm:px-3 sm:py-1.5 rounded-full text-xs font-semibold border transition-all duration-200 cursor-pointer ${
                 webSearchEnabled
                   ? "bg-secondary/15 text-secondary border-secondary/35"
                   : "bg-background text-text-muted border-card-border hover:text-foreground"
@@ -807,7 +813,7 @@ function ChatPageContent() {
         {activeMainTab === "chat" ? (
           <>
             {/* Message area */}
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-6">
+            <div className="flex-1 overflow-y-auto px-3 py-4 sm:p-6 space-y-4 sm:space-y-6">
               {messages.length === 0 && !isStreaming ? (
                 docsLoading ? (
                   <div className="flex flex-col items-center justify-center h-full text-center px-4">
@@ -921,18 +927,19 @@ function ChatPageContent() {
                             <div className="flex items-center space-x-2">
                               <button
                                 onClick={() => handleSaveMessageToNotes(msg)}
-                                className="p-1 hover:bg-accent/15 text-text-muted hover:text-accent rounded-lg cursor-pointer transition-colors flex items-center gap-1"
-                                title="Pin to Notes"
+                                disabled={pinningId === msg.id || pinnedIds.has(msg.id)}
+                                className={`flex min-h-8 items-center gap-1 rounded-lg px-1.5 transition-colors cursor-pointer disabled:cursor-default ${pinnedIds.has(msg.id) ? "text-success" : "text-text-muted hover:bg-accent/15 hover:text-accent"}`}
+                                title={pinnedIds.has(msg.id) ? "Saved to Sticky Notes" : "Pin to Sticky Notes"}
                               >
-                                <Pin className="w-3 h-3" />
-                                <span>Pin</span>
+                                {pinningId === msg.id ? <Loader2 className="w-3 h-3 animate-spin" /> : pinnedIds.has(msg.id) ? <Check className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
+                                <span>{pinnedIds.has(msg.id) ? "Pinned" : "Pin"}</span>
                               </button>
 
                               {msg.query_log_id && (
                                 <div className="flex items-center space-x-2 border-l border-card-border/30 pl-2">
                                   <button
                                     onClick={() => handleRateMessage(msg.id, msg.query_log_id!, 1)}
-                                    className={`p-1 hover:bg-success-soft rounded-lg cursor-pointer transition-colors ${
+                                    className={`p-2 sm:p-1 hover:bg-success-soft rounded-lg cursor-pointer transition-colors ${
                                       msg.rating === 1 ? "text-success" : "text-text-muted hover:text-success"
                                     }`}
                                     title="Thumbs Up (Helpful)"
@@ -941,7 +948,7 @@ function ChatPageContent() {
                                   </button>
                                   <button
                                     onClick={() => handleRateMessage(msg.id, msg.query_log_id!, -1)}
-                                    className={`p-1 hover:bg-danger-soft rounded-lg cursor-pointer transition-colors ${
+                                    className={`p-2 sm:p-1 hover:bg-danger-soft rounded-lg cursor-pointer transition-colors ${
                                       msg.rating === -1 ? "text-danger" : "text-text-muted hover:text-danger"
                                     }`}
                                     title="Thumbs Down (Unhelpful)"
@@ -1032,7 +1039,7 @@ function ChatPageContent() {
             )}
 
             {/* Input Bar */}
-            <div className="p-4 sm:p-6 border-t border-card-border/50 bg-card/25">
+            <div className="px-3 py-3 sm:p-6 border-t border-card-border/50 bg-card/25 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
               {selectedDocIds.length > 0 && (
                 <div className="mb-3 flex flex-wrap items-center gap-1.5 text-xs">
                   <span className="text-text-muted">Answering only from:</span>
@@ -1339,7 +1346,7 @@ function ChatPageContent() {
                   <button
                     onClick={() => {
                       navigator.clipboard.writeText(synthesisText);
-                      alert("Copied draft to clipboard!");
+                      toast("Draft copied to clipboard");
                     }}
                     className="flex-1 py-2 bg-primary hover:bg-primary-hover text-background text-xs font-semibold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5"
                   >

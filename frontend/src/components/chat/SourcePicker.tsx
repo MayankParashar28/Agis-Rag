@@ -37,20 +37,20 @@ export function KBPicker({
   const { open, setOpen, ref } = usePopover();
   const current = kbs.find((k) => k.id === value);
   return (
-    <div ref={ref} className="relative min-w-0">
+    <div ref={ref} className="relative min-w-0 flex-1 sm:flex-none">
       <button
         type="button"
         onClick={() => setOpen(!open)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex h-9 max-w-[240px] items-center gap-2 rounded-lg border border-border bg-surface px-3 text-sm font-semibold text-foreground transition-colors hover:border-border-strong"
+        className="flex h-9 w-full max-w-full items-center gap-2 rounded-lg border border-border bg-surface px-2.5 text-sm font-semibold text-foreground transition-colors hover:border-border-strong sm:w-auto sm:max-w-[240px] sm:px-3"
       >
         <Database className="h-4 w-4 shrink-0 text-accent" />
-        <span className="truncate">{current?.name ?? "Choose a knowledge base"}</span>
+        <span className="min-w-0 flex-1 truncate text-left">{current?.name ?? "Choose a knowledge base"}</span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       </button>
       {open && (
-        <div role="listbox" aria-label="Knowledge bases" className="absolute left-0 top-11 z-50 w-72 max-w-[85vw] overflow-hidden rounded-xl border border-border bg-surface shadow-[var(--shadow-lg)] animate-zoom-in">
+        <div role="listbox" aria-label="Knowledge bases" className="absolute left-0 top-11 z-50 w-72 max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-xl border border-border bg-surface shadow-[var(--shadow-lg)] animate-zoom-in">
           <p className="eyebrow px-3 pb-1 pt-3 text-[10px]">Knowledge base</p>
           <ul className="max-h-72 overflow-y-auto p-1.5">
             {kbs.map((kb) => (
@@ -108,7 +108,7 @@ export function DocumentPicker({
   const toggle = (id: string) => onChange(selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]);
 
   return (
-    <div ref={ref} className="relative min-w-0">
+    <div ref={ref} className="relative min-w-0 shrink-0 sm:shrink">
       <button
         type="button"
         onClick={() => setOpen(!open)}
@@ -116,16 +116,17 @@ export function DocumentPicker({
         aria-haspopup="dialog"
         aria-expanded={open}
         className={cx(
-          "flex h-9 max-w-[260px] items-center gap-2 rounded-lg border px-3 text-sm transition-colors",
+          "flex h-9 max-w-[140px] items-center gap-1.5 rounded-lg border px-2.5 text-sm transition-colors sm:max-w-[260px] sm:gap-2 sm:px-3",
           selected.length ? "border-accent bg-accent-soft text-foreground" : "border-border bg-surface text-foreground hover:border-border-strong"
         )}
       >
         {loading ? <Spinner className="h-3.5 w-3.5" /> : <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />}
-        <span className="truncate">{label}</span>
+        <span className="hidden truncate sm:inline">{label}</span>
+        <span className="truncate sm:hidden">{loading ? "…" : selected.length ? `${selected.length} doc${selected.length > 1 ? "s" : ""}` : `All (${ready.length})`}</span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       </button>
       {open && (
-        <div role="dialog" aria-label="Choose documents" className="absolute left-0 top-11 z-50 w-80 max-w-[90vw] overflow-hidden rounded-xl border border-border bg-surface shadow-[var(--shadow-lg)] animate-zoom-in">
+        <div role="dialog" aria-label="Choose documents" className="absolute right-0 top-11 z-50 w-80 max-w-[calc(100vw-1.5rem)] sm:left-0 sm:right-auto overflow-hidden rounded-xl border border-border bg-surface shadow-[var(--shadow-lg)] animate-zoom-in">
           <div className="border-b border-border p-3">
             <p className="text-sm font-semibold text-foreground">Answer from</p>
             <p className="text-xs text-muted-foreground">Pick documents to limit the search, or use all of them.</p>

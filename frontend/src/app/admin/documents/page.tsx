@@ -89,7 +89,7 @@ export default function AdminDocumentManagementPage() {
           <EmptyState icon={FolderOpen} title="No documents found" />
         ) : (
           <div className="overflow-x-auto">
-            <table className="table">
+            <table className="table table-stack">
               <thead>
                 <tr>
                   <th>Document</th>
@@ -109,11 +109,11 @@ export default function AdminDocumentManagementPage() {
                         <span className="truncate font-medium" title={d.filename}>{d.filename}</span>
                       </div>
                     </td>
-                    <td className="text-muted-foreground">{d.kb_name}</td>
-                    <td className="whitespace-nowrap text-right tabular-nums text-muted-foreground">{formatBytes(d.file_size)}</td>
-                    <td className="text-right tabular-nums">{d.chunk_count.toLocaleString()}</td>
-                    <td><StatusBadge status={d.status} /></td>
-                    <td>
+                    <td data-label="Knowledge base" className="text-muted-foreground">{d.kb_name}</td>
+                    <td data-label="Size" className="whitespace-nowrap text-right tabular-nums text-muted-foreground">{formatBytes(d.file_size)}</td>
+                    <td data-label="Chunks" className="text-right tabular-nums">{d.chunk_count.toLocaleString()}</td>
+                    <td data-label="Status"><StatusBadge status={d.status} /></td>
+                    <td data-label="Actions">
                       <div className="flex items-center justify-end">
                         {busyId === d.id ? (
                           <Spinner className="mr-2 text-muted-foreground" />

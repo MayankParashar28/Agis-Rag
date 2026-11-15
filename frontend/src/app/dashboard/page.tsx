@@ -38,7 +38,7 @@ export default function DashboardPage() {
   ];
 
   const grid = (items: typeof usage) => (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
       {items.map((c) => (
         <StatCard key={c.label} label={c.label} icon={c.icon} value={loading || c.value === undefined ? <Skeleton className="h-7 w-20" /> : c.value} />
       ))}

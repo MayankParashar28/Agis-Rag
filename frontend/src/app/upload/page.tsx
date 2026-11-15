@@ -192,8 +192,8 @@ function UploadPageContent() {
         </Card>
       ) : (
         <>
-          <Card className="grid gap-4 p-5 md:grid-cols-[minmax(0,2fr)_repeat(2,minmax(0,1fr))]">
-            <KBSelect kbs={kbs} value={selectedKBId} onChange={(id) => { setPickedKB(id); setProgress({}); }} />
+          <Card className="grid grid-cols-2 gap-4 p-4 sm:p-5 md:grid-cols-[minmax(0,2fr)_repeat(2,minmax(0,1fr))]">
+            <div className="col-span-2 md:col-span-1"><KBSelect kbs={kbs} value={selectedKBId} onChange={(id) => { setPickedKB(id); setProgress({}); }} /></div>
             <div>
               <label htmlFor="chunk-size" className="label">Chunk size</label>
               <input id="chunk-size" type="number" min={100} max={8000} value={chunkSize} onChange={(e) => setChunkSize(Number(e.target.value))} className="input" />

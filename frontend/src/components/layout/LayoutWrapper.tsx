@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 import Sidebar from "./Sidebar";
 import { Menu } from "lucide-react";
+import { Toaster } from "@/components/ui";
 
 export default function LayoutWrapper({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -12,7 +13,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
   // No app chrome on the landing, login and registration pages.
   const isAuthPage = pathname === "/login" || pathname === "/register" || pathname === "/" || pathname.startsWith("/chat/print/");
   if (isAuthPage) {
-    return <div className="min-h-screen bg-background">{children}</div>;
+    return <div className="min-h-screen bg-background">{children}<Toaster /></div>;
   }
 
   const isChat = pathname === "/chat";
@@ -30,8 +31,9 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
       </div>
 
       <Sidebar mobileMenuOpen={mobileMenuOpen} setMobileMenuOpen={setMobileMenuOpen} />
+      <Toaster />
 
-      <main className={isChat ? "min-w-0 flex-1 overflow-hidden p-3 md:p-5" : "min-w-0 flex-1 overflow-y-auto"}>
+      <main className={isChat ? "min-w-0 flex-1 overflow-hidden md:p-5" : "min-w-0 flex-1 overflow-y-auto"}>
         {isChat ? children : <div className="mx-auto w-full max-w-7xl px-4 py-6 md:px-8 md:py-10">{children}</div>}
       </main>
     </div>

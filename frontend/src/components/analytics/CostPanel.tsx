@@ -23,18 +23,18 @@ export default function CostPanel() {
         </div>
         <div className="flex rounded-lg border border-border bg-surface p-0.5 text-xs">
           {[7, 30, 90].map((d) => (
-            <button key={d} onClick={() => setDays(d)} className={cx("rounded-md px-2.5 py-1 font-semibold", days === d ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground")}>{d} days</button>
+            <button key={d} onClick={() => setDays(d)} className={cx("rounded-md px-2.5 py-1.5 font-semibold sm:py-1", days === d ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground")}>{d} days</button>
           ))}
         </div>
       </div>
       {error && <Alert tone="danger">{error}</Alert>}
       {loading || !data ? (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-24" />)}</div>
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-24" />)}</div>
       ) : data.totals.queries === 0 ? (
         <Card><EmptyState icon={Coins} title="No usage yet" description="Costs appear here once questions have been answered." /></Card>
       ) : (
         <>
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
             <StatCard label="Total cost" value={usd(data.totals.cost_usd)} hint={`${usd(data.totals.avg_cost_per_query_usd)} per query`} />
             <StatCard label="Queries" value={data.totals.queries.toLocaleString()} hint={`${data.totals.cached} served from cache (free)`} />
             <StatCard label="Input tokens" value={k(data.totals.prompt_tokens)} />
@@ -47,22 +47,22 @@ export default function CostPanel() {
           <div className="grid gap-4 lg:grid-cols-2">
             <Card className="overflow-hidden">
               <CardHeader title="By knowledge base" />
-              <table className="table">
+              <table className="table table-stack">
                 <thead><tr><th>Knowledge base</th><th className="text-right">Queries</th><th className="text-right">Tokens</th><th className="text-right">Cost</th></tr></thead>
                 <tbody>
                   {data.per_kb.map((r) => (
-                    <tr key={r.kb_id ?? r.kb_name}><td className="font-medium">{r.kb_name}</td><td className="text-right tabular-nums">{r.queries}</td><td className="text-right tabular-nums">{k(r.prompt_tokens + r.completion_tokens)}</td><td className="text-right tabular-nums">{usd(r.cost_usd)}</td></tr>
+                    <tr key={r.kb_id ?? r.kb_name}><td className="font-medium">{r.kb_name}</td><td data-label="Queries" className="text-right tabular-nums">{r.queries}</td><td data-label="Tokens" className="text-right tabular-nums">{k(r.prompt_tokens + r.completion_tokens)}</td><td data-label="Cost" className="text-right tabular-nums">{usd(r.cost_usd)}</td></tr>
                   ))}
                 </tbody>
               </table>
             </Card>
             <Card className="overflow-hidden">
               <CardHeader title="By model" />
-              <table className="table">
+              <table className="table table-stack">
                 <thead><tr><th>Model</th><th className="text-right">Queries</th><th className="text-right">Tokens</th><th className="text-right">Cost</th></tr></thead>
                 <tbody>
                   {data.per_model.map((r) => (
-                    <tr key={r.model}><td className="font-mono text-xs">{r.model}</td><td className="text-right tabular-nums">{r.queries}</td><td className="text-right tabular-nums">{k(r.prompt_tokens + r.completion_tokens)}</td><td className="text-right tabular-nums">{usd(r.cost_usd)}</td></tr>
+                    <tr key={r.model}><td className="font-mono text-xs">{r.model}</td><td data-label="Queries" className="text-right tabular-nums">{r.queries}</td><td data-label="Tokens" className="text-right tabular-nums">{k(r.prompt_tokens + r.completion_tokens)}</td><td data-label="Cost" className="text-right tabular-nums">{usd(r.cost_usd)}</td></tr>
                   ))}
                 </tbody>
               </table>
