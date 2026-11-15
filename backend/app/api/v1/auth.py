@@ -233,6 +233,36 @@ async def google_login(token_in: GoogleToken, db: AsyncSession = Depends(get_db)
     }
 
 
+@router.get("/me/usage")
+async def my_usage(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Any:
+    """Today's questions and tokens against this user's daily limits."""
+    from app.services.usage import usage_today
+    return (await usage_today(db, current_user)).as_dict()
+
+
+@router.get("/usage/today")
+async def usage_today_all(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+) -> Any:
+    """Admin: today's usage and effective limits for every user."""
+    from app.services.usage import limits_for, resets_at, usage_by_user
+    users = (await db.execute(select(User))).scalars().all()
+    used = await usage_by_user(db)
+    out = {}
+    for u in users:
+        n, tokens, cost = used.get(u.id, (0, 0, 0.0))
+        ql, tl = limits_for(u)
+        out[str(u.id)] = {"questions": n, "tokens": tokens, "cost_usd": round(cost, 4),
+                          "question_limit": ql, "token_limit": tl}
+    return {"resets_at": resets_at().isoformat(), "users": out,
+            "defaults": {"question_limit": settings.DAILY_QUESTION_LIMIT, "token_limit": settings.DAILY_TOKEN_LIMIT,
+                         "admins_unlimited": settings.ADMINS_UNLIMITED}}
+
+
 @router.get("/users", response_model=List[UserResponse])
 async def list_users(
     db: AsyncSession = Depends(get_db),
@@ -329,8 +359,20 @@ async def update_user(
                 )
         user.is_active = user_in.is_active
         
+    limit_fields = {"daily_question_limit", "daily_token_limit"} & user_in.model_fields_set
+    if limit_fields:
+        if not is_admin:
+            raise HTTPException(status_code=403, detail="Only administrators can change usage limits")
+        for f in limit_fields:
+            setattr(user, f, getattr(user_in, f))
+
     await db.commit()
     await db.refresh(user)
+    if is_admin and limit_fields:
+        from app.services import audit
+        await audit.record(db, current_user, "user.limits", "user", user.id,
+                           {"email": user.email, "daily_question_limit": user.daily_question_limit,
+                            "daily_token_limit": user.daily_token_limit})
     if is_admin and (user_in.role is not None or user_in.is_active is not None):
         from app.services import audit
         await audit.record(db, current_user, "user.update", "user", user.id,

@@ -1,6 +1,6 @@
 from app.core.database import Base
 from app.models.auth import User
-from app.models.knowledge import KnowledgeBase, Document, DocumentChunk
+from app.models.knowledge import KnowledgeBase, Document, DocumentChunk, DocumentTable
 from app.models.metrics import Conversation, Message, QueryLog, Evaluation, GoldenQuestion, AuditLog
 
 __all__ = [
@@ -9,6 +9,7 @@ __all__ = [
     "KnowledgeBase",
     "Document",
     "DocumentChunk",
+    "DocumentTable",
     "Conversation",
     "Message",
     "QueryLog",

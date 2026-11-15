@@ -7,6 +7,26 @@ export interface User {
   role: string;
   is_active: boolean;
   created_at: string;
+  /** null = server default, 0 = unlimited */
+  daily_question_limit?: number | null;
+  daily_token_limit?: number | null;
+}
+
+export interface UsageToday {
+  questions: number;
+  tokens: number;
+  cost_usd: number;
+  question_limit: number; // 0 = unlimited
+  token_limit: number; // 0 = unlimited
+  resets_at: string;
+  custom_limits: boolean;
+  blocked: boolean;
+}
+
+export interface UsageOverview {
+  resets_at: string;
+  users: Record<string, { questions: number; tokens: number; cost_usd: number; question_limit: number; token_limit: number }>;
+  defaults: { question_limit: number; token_limit: number; admins_unlimited: boolean };
 }
 
 export interface AuthResponse {
@@ -44,6 +64,9 @@ export interface Citation {
   doc_id?: string;
   chunk_id?: string;
   url?: string;
+  /** "calculation": an exact SQL result over a stored table, not a passage. */
+  kind?: "calculation";
+  sql?: string;
 }
 
 export interface IndexingProgress {
@@ -54,6 +77,8 @@ export interface IndexingProgress {
   message: string | null;
   status?: string;
   updated_at?: number;
+  /** Estimated seconds left while embedding. */
+  eta_seconds?: number;
 }
 
 export interface ChunkContext {
@@ -430,7 +455,9 @@ export const api = {
 
   // User Management
   listUsers: () => request<User[]>("/auth/users"),
-  updateUser: (userId: string, data: { email?: string; full_name?: string; role?: string; is_active?: boolean }) => 
+  getMyUsage: () => request<UsageToday>("/auth/me/usage", {}, { noCache: true }),
+  getUsageOverview: () => request<UsageOverview>("/auth/usage/today", {}, { noCache: true }),
+  updateUser: (userId: string, data: { email?: string; full_name?: string; role?: string; is_active?: boolean; daily_question_limit?: number | null; daily_token_limit?: number | null }) => 
     request<User>(`/auth/users/${userId}`, { method: "PUT", body: JSON.stringify(data) }),
 
 
@@ -584,7 +611,11 @@ export const api = {
     })
       .then((response) => {
         if (!response.ok) {
-          throw new Error("Failed to start message stream");
+          // Surface the server's reason (e.g. the daily limit) instead of a generic failure.
+          return response.json().catch(() => ({})).then((body: { detail?: unknown }) => {
+            const detail = typeof body?.detail === "string" ? body.detail : null;
+            throw new Error(detail || (response.status === 429 ? "Daily limit reached. Try again tomorrow." : "Failed to start message stream"));
+          });
         }
         
         const reader = response.body?.getReader();

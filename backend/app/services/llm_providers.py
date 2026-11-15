@@ -34,6 +34,8 @@ def mark_exhausted(label: str, exc: Exception) -> None:
     logger.warning(
         f"{label} quota exhausted; skipping it for {wait / 60:.0f} minutes."
     )
+    from app.services.alerts import alert
+    alert("llm_quota", f"{label} quota exhausted", {"provider": label, "retry in": f"{wait / 60:.0f} minutes"}, key=label)
 
 
 def _cooling_down(label: str) -> bool:
@@ -53,7 +55,22 @@ class LLMProvider(NamedTuple):
     base_url: Optional[str]
 
 
-def provider_chain(prefer_paid: bool = False) -> List[LLMProvider]:
+# Lite models the provider rejected as unknown: skipped for the life of the
+# process so a wrong model name costs one failed call, not one per request.
+_lite_unavailable: set = set()
+
+
+def mark_model_unavailable(provider: "LLMProvider", exc: Exception) -> None:
+    """Remember a lite model the provider does not offer."""
+    if not provider.label.endswith(" lite"):
+        return
+    text = str(exc).lower()
+    if getattr(exc, "status_code", None) == 404 or "not found" in text or "does not exist" in text or "unknown model" in text:
+        _lite_unavailable.add(provider.model)
+        logger.warning(f"{provider.label} model '{provider.model}' is not available; using the main model for side tasks.")
+
+
+def provider_chain(prefer_paid: bool = False, lite: bool = False) -> List[LLMProvider]:
     """Configured providers, best first.
 
     Gemini leads by default: a single answer or audit fits inside its free
@@ -79,6 +96,17 @@ def provider_chain(prefer_paid: bool = False) -> List[LLMProvider]:
 
     ordered = [p for p in ([openai_p, gemini] if prefer_paid else [gemini, openai_p])
                if p is not None]
+
+    # Side tasks try each provider's cheaper model first, then its main one.
+    if lite and settings.USE_LITE_MODELS:
+        lite_model = {"Gemini": settings.GEMINI_LITE_MODEL, "OpenAI": settings.OPENAI_LITE_MODEL}
+        expanded = []
+        for p in ordered:
+            m = lite_model.get(p.label)
+            if m and m != p.model and m not in _lite_unavailable:
+                expanded.append(LLMProvider(f"{p.label} lite", m, p.api_key, p.base_url))
+            expanded.append(p)
+        ordered = expanded
 
     available = [p for p in ordered if not _cooling_down(p.label)]
     # If every provider is cooling down, try them anyway rather than returning

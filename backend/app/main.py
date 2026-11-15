@@ -25,10 +25,12 @@ async def lifespan(app: FastAPI):
     logger.info("FastAPI service starting up...")
     # Each step has its own guard: they used to share one try block, so an
     # unreachable Redis skipped the vector-index healing that follows it.
+    from app.services.alerts import alert, channels
     try:
         await init_db()
     except Exception as e:
         logger.critical(f"Database initialisation failed: {e}")
+        alert("startup", "The database could not be reached at startup", {"error": str(e)[:500]})
     try:
         await init_redis()
     except Exception as e:
@@ -39,7 +41,9 @@ async def lifespan(app: FastAPI):
     # Postgres, the source of truth, still holds every chunk. Runs in the
     # background: it must never hold up the port binding.
     asyncio.create_task(_heal_vector_index())
-    logger.info(f"Startup sequence completed (indexing mode: {settings.INDEXING_MODE}).")
+    asyncio.create_task(_backfill_tables())
+    logger.info(f"Startup sequence completed (indexing mode: {settings.INDEXING_MODE}; "
+                f"alerts: {', '.join(channels()) or 'log only'}).")
     if settings.INDEXING_MODE == "celery" and any(h in settings.REDIS_URL for h in ("upstash.io", "redislabs.com", "redis-cloud.com")):
         logger.warning(
             "INDEXING_MODE=celery with a hosted Redis: an idle Celery worker polls Redis "
@@ -53,6 +57,16 @@ async def lifespan(app: FastAPI):
     logger.info("FastAPI service shutting down...")
     await close_redis()
     logger.info("Shutdown sequence completed.")
+
+
+async def _backfill_tables() -> None:
+    """One-off: keep table rows for documents indexed before exact table
+    answers existed, so calculations work on them without re-indexing."""
+    try:
+        from app.services.table_qa import backfill_tables
+        await backfill_tables()
+    except Exception as e:
+        logger.error(f"Table backfill skipped: {e}")
 
 
 async def _heal_vector_index() -> None:
@@ -106,6 +120,10 @@ app.add_middleware(SlowAPIMiddleware)
 async def global_exception_handler(request: Request, exc: Exception):
     error_id = str(uuid.uuid4())
     logger.error(f"Unhandled Exception [{error_id}]: {str(exc)}", exc_info=True)
+    from app.services.alerts import alert
+    alert("server_error", f"Server error on {request.method} {request.url.path}",
+          {"error": f"{type(exc).__name__}: {str(exc)[:400]}", "error_id": error_id},
+          key=f"{type(exc).__name__}:{request.url.path}")
     return JSONResponse(
         status_code=500,
         content={"detail": "Internal server error. Please try again later.", "error_id": error_id}

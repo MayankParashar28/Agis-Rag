@@ -168,6 +168,12 @@ export function StatusBadge({ status }: { status: string }) {
 }
 
 /** Live indexing progress bar for one document. */
+function formatEta(sec: number): string {
+  if (sec < 60) return `about ${Math.max(5, Math.round(sec / 5) * 5)} s`;
+  const min = Math.round(sec / 60);
+  return min < 60 ? `about ${min} min` : `about ${Math.floor(min / 60)} h ${min % 60} min`;
+}
+
 export function IndexingBar({ progress, compact }: { progress?: IndexingProgress; compact?: boolean }) {
   // No live record (older backend, or Redis unreachable): show that work is
   // happening without inventing a percentage.
@@ -192,7 +198,12 @@ export function IndexingBar({ progress, compact }: { progress?: IndexingProgress
         <span className={cx("truncate font-medium", failed ? "text-danger" : "text-foreground")}>
           {progress.label}
         </span>
-        <span className="tabular-nums text-muted-foreground">{Math.round(pct)}%</span>
+        <span className="shrink-0 tabular-nums text-muted-foreground">
+          {progress.stage === "embedding" && progress.eta_seconds != null && progress.eta_seconds >= 5 && (
+            <span className="mr-1.5">{formatEta(progress.eta_seconds)} left ·</span>
+          )}
+          {Math.round(pct)}%
+        </span>
       </div>
       <div
         className="h-1.5 w-full overflow-hidden rounded-full bg-surface-muted"

@@ -1,6 +1,8 @@
+import asyncio
 import uuid
 import time
 import math
+import weakref
 from typing import List, Dict, Any, Tuple, Optional
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
@@ -11,6 +13,19 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.models.knowledge import DocumentChunk, Document
 from app.services.models import get_embedding_model, get_reranker
+
+
+# An AsyncSession runs one statement at a time. Several searches for one
+# question (sub-questions, compare mode) share a session, so their database
+# step takes turns while embedding and vector search still overlap.
+_session_locks: "weakref.WeakKeyDictionary[AsyncSession, asyncio.Lock]" = weakref.WeakKeyDictionary()
+
+
+def _session_lock(db: AsyncSession) -> asyncio.Lock:
+    lock = _session_locks.get(db)
+    if lock is None:
+        lock = _session_locks[db] = asyncio.Lock()
+    return lock
 
 
 class RetrievalPipeline:
@@ -210,8 +225,9 @@ class RetrievalPipeline:
                 
             fts_query = fts_query.order_by(text("rank DESC")).limit(top_k)
             
-            result = await db.execute(fts_query)
-            for row in result.all():
+            async with _session_lock(db):
+                rows = (await db.execute(fts_query)).all()
+            for row in rows:
                 bm25_results.append({
                     "content": row[0],
                     "page_number": row[1],

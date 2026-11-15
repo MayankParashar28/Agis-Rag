@@ -7,8 +7,22 @@ import { useApi } from "@/lib/hooks";
 import { SVGLineChart } from "@/components/analytics-charts";
 import { Alert, Card, CardHeader, EmptyState, Skeleton, StatCard, cx } from "@/components/ui";
 
-const usd = (v: number) => (v >= 1 ? `$${v.toFixed(2)}` : v > 0 ? `$${v.toFixed(4)}` : "$0");
+const usd = (v: number) => (v >= 1 ? `$${v.toFixed(2)}` : v > 0 ? `$${Number(v.toPrecision(2))}` : "$0");
 const k = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+
+/** Every day in the window, with 0 for days without questions, so the
+ *  line shows quiet days instead of skipping them. */
+function dailySeries<T extends { day: string }>(rows: T[], days: number, value: (r: T) => number) {
+  const byDay = new Map(rows.map((r) => [r.day, value(r)]));
+  const out: { label: string; value: number }[] = [];
+  const today = new Date();
+  for (let i = Math.min(days, 90) - 1; i >= 0; i--) {
+    const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - i));
+    const key = d.toISOString().slice(0, 10);
+    out.push({ label: key.slice(5), value: byDay.get(key) ?? 0 });
+  }
+  return out;
+}
 
 export default function CostPanel() {
   const [days, setDays] = useState(30);
@@ -41,8 +55,10 @@ export default function CostPanel() {
             <StatCard label="Output tokens" value={k(data.totals.completion_tokens)} />
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
-            <SVGLineChart title="Cost per day" data={data.per_day.map((d) => ({ label: d.day.slice(5), value: d.cost_usd }))} color="#a8801f" gradientId="cost" unit="$" />
-            <SVGLineChart title="Queries per day" data={data.per_day.map((d) => ({ label: d.day.slice(5), value: d.queries }))} color="#1a1a1a" gradientId="qpd" unit="" />
+            <SVGLineChart title="Cost per day" data={dailySeries(data.per_day, data.days, (d) => d.cost_usd)} color="#a8801f" gradientId="cost" format={usd}
+              headline={{ value: usd(data.totals.cost_usd), caption: `last ${data.days} days` }} />
+            <SVGLineChart title="Queries per day" data={dailySeries(data.per_day, data.days, (d) => d.queries)} color="#1a1a1a" gradientId="qpd" format={(v) => String(Math.round(v))}
+              headline={{ value: data.totals.queries.toLocaleString(), caption: `last ${data.days} days` }} />
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
             <Card className="overflow-hidden">

@@ -10,12 +10,34 @@ import asyncio
 
 from app.core.config import settings
 from app.core.logging import logger
-from app.models.knowledge import Document, DocumentChunk
+from app.models.knowledge import Document, DocumentChunk, DocumentTable
 from app.services.models import get_embedding_model
 from app.services.chunking import split_markdown, split_text_recursive
 from app.services.summarizer import context_prefix
 
 QDRANT_BATCH = 64   # vectors per upsert request
+
+
+async def _finish_uploads(uploads) -> None:
+    """Wait for every upload, then raise the first failure (if any). Waiting
+    for all first matters: a rollback must not race uploads still in flight."""
+    results = await asyncio.gather(*uploads, return_exceptions=True)
+    for r in results:
+        if isinstance(r, BaseException):
+            raise r
+EMBED_BATCH = 16    # chunks per forward pass (sorted by length within a group)
+FIRST_GROUP = 16    # small first group: an early time-left estimate
+GROUP = 96          # chunks per embed call between progress updates/uploads
+
+
+def _group_bounds(n: int) -> List[tuple]:
+    bounds, start = [], 0
+    size = FIRST_GROUP
+    while start < n:
+        end = min(n, start + size)
+        bounds.append((start, end))
+        start, size = end, GROUP
+    return bounds
 DB_BATCH = 200      # chunk rows per flush
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -230,65 +252,26 @@ class DocumentIndexer:
         if all_texts:
             logger.info(f"DocumentIndexer: Batch embedding {len(all_texts)} chunks...")
             start_embed = time.time()
-            # Encode in groups of batches so progress can be reported between
-            # them. Each group is still vectorized internally (batch_size=32).
             _report("embedding", msg=f"0/{len(all_texts)} chunks embedded")
-            group = 128
-            encoded_batches = []
-            for g in range(0, len(all_texts), group):
-                part = await asyncio.to_thread(
-                    self.embed_model.encode,
-                    all_texts[g:g + group],
-                    batch_size=32,
-                    show_progress_bar=False,
-                    normalize_embeddings=True
-                )
-                encoded_batches.extend(part)
-                if report_progress:
-                    progress.embedding_progress(str(doc_id), min(g + group, len(all_texts)), len(all_texts))
+            # Pipelined: while one group of chunks is being embedded (CPU), the
+            # previous group's vectors upload to Qdrant (network), so upload
+            # time no longer adds to the total. The first group is small so
+            # the progress bar gets a time-left estimate within seconds.
+            uploads: List[asyncio.Task] = []
+            try:
+                await self._embed_and_upload(all_texts, all_chunks_info, doc_id, kb_id, filename, collection_name,
+                                             db_chunks, qdrant_points, uploads, start_embed, report_progress)
+            except BaseException:
+                # Let in-flight uploads land, then remove whatever this run wrote.
+                await asyncio.gather(*uploads, return_exceptions=True)
+                await asyncio.to_thread(self._delete_doc_vectors, collection_name, doc_id)
+                raise
+            total_chunks = len(db_chunks)
             embed_latency = time.time() - start_embed
-            # Calculate average per-chunk latency for tracking
             avg_chunk_latency = embed_latency / len(all_texts)
             embedding_latencies = [avg_chunk_latency] * len(all_texts)
-            
-            # Reconstruct DB chunks and Qdrant points
-            for i, chunk_info in enumerate(all_chunks_info):
-                chunk_id = uuid.uuid4()
-                qdrant_point_id = str(chunk_id)
-                vector = encoded_batches[i].tolist()
-                
-                # Relational DB DocumentChunk
-                db_chunk = DocumentChunk(
-                    id=chunk_id,
-                    doc_id=doc_id,
-                    content=chunk_info["text"],
-                    page_number=chunk_info["page_number"],
-                    chunk_index=total_chunks,
-                    qdrant_point_id=qdrant_point_id,
-                    section=chunk_info.get("section"),
-                    kind=chunk_info.get("kind"),
-                )
-                db_chunks.append(db_chunk)
-                
-                # Qdrant Point
-                qdrant_points.append(
-                    qmodels.PointStruct(
-                        id=qdrant_point_id,
-                        vector=vector,
-                        payload={
-                            "chunk_id": qdrant_point_id,
-                            "doc_id": str(doc_id),
-                            "kb_id": str(kb_id),
-                            "content": chunk_info["text"],
-                            "page_number": chunk_info["page_number"],
-                            "filename": filename,
-                            "source": filename,
-                            "section": chunk_info.get("section"),
-                            "kind": chunk_info.get("kind"),
-                        }
-                    )
-                )
-                total_chunks += 1
+            logger.info(f"Embedded {len(all_texts)} chunks in {embed_latency:.1f}s "
+                        f"({len(all_texts) / max(embed_latency, 1e-6):.1f} chunks/s).")
 
         # Transaction block to ensure consistency between Qdrant and PostgreSQL
         _report("saving", msg=f"Saving {total_chunks} chunks")
@@ -296,11 +279,11 @@ class DocumentIndexer:
             # Upsert vectors in batches: one request carrying every vector of a
             # large document is megabytes of JSON and can hit the client
             # timeout or the server's request-size limit.
-            if qdrant_points:
-                logger.info(f"Upserting {len(qdrant_points)} vectors to Qdrant collection {collection_name}...")
-                for i in range(0, len(qdrant_points), QDRANT_BATCH):
-                    batch = qdrant_points[i:i + QDRANT_BATCH]
-                    await asyncio.to_thread(self.qclient.upsert, collection_name=collection_name, points=batch)
+            # Wait for the uploads started during embedding; any failure
+            # raises here and the whole document is rolled back below.
+            if uploads:
+                await _finish_uploads(uploads)
+                logger.info(f"Upserted {len(qdrant_points)} vectors to Qdrant collection {collection_name}.")
 
             # Fresh transaction for the write (the read one was closed above).
             result = await db.execute(select(Document).where(Document.id == doc_id))
@@ -311,11 +294,18 @@ class DocumentIndexer:
                 db.add_all(db_chunks[i:i + DB_BATCH])
                 await db.flush()
 
+            # Keep each table's rows too, for exact calculations (table_qa).
+            await db.execute(delete(DocumentTable).where(DocumentTable.doc_id == doc_id))
+            data_tables = self._table_rows(doc_id, kb_id, parsed_pages, filename)
+            db.add_all(data_tables)
+            await db.flush()
+
             doc.status = "indexed"
             doc.meta_info = {
                 **(doc.meta_info or {}),
                 "total_chunks": total_chunks,
                 "table_chunks": sum(1 for c in all_chunks_info if c.get("kind") == "table"),
+                "data_tables": len(data_tables),
                 "sections": len({c.get("section") for c in all_chunks_info if c.get("section")}),
                 "embedding_model": settings.EMBEDDING_MODEL,
                 "contextual_embeddings": bool(settings.CONTEXTUAL_EMBEDDINGS),
@@ -356,6 +346,89 @@ class DocumentIndexer:
             "total_chunks": total_chunks,
             "average_embedding_latency": avg_embed_latency
         }
+
+    async def _embed_and_upload(self, all_texts, all_chunks_info, doc_id, kb_id, filename, collection_name,
+                                db_chunks, qdrant_points, uploads, start_embed, report_progress):
+        """Embed chunk groups and start each group's Qdrant upload while the
+        next group embeds. Fills db_chunks, qdrant_points and uploads."""
+        from app.services import progress
+        for g0, g1 in _group_bounds(len(all_texts)):
+            vectors = await asyncio.to_thread(
+                self.embed_model.encode,
+                all_texts[g0:g1],
+                batch_size=EMBED_BATCH,
+                show_progress_bar=False,
+                normalize_embeddings=True,
+            )
+            group_points = []
+            for i, vector in zip(range(g0, g1), vectors):
+                chunk_info = all_chunks_info[i]
+                chunk_id = uuid.uuid4()
+                qdrant_point_id = str(chunk_id)
+                db_chunks.append(DocumentChunk(
+                    id=chunk_id,
+                    doc_id=doc_id,
+                    content=chunk_info["text"],
+                    page_number=chunk_info["page_number"],
+                    chunk_index=i,
+                    qdrant_point_id=qdrant_point_id,
+                    section=chunk_info.get("section"),
+                    kind=chunk_info.get("kind"),
+                ))
+                group_points.append(qmodels.PointStruct(
+                    id=qdrant_point_id,
+                    vector=vector.tolist(),
+                    payload={
+                        "chunk_id": qdrant_point_id,
+                        "doc_id": str(doc_id),
+                        "kb_id": str(kb_id),
+                        "content": chunk_info["text"],
+                        "page_number": chunk_info["page_number"],
+                        "filename": filename,
+                        "source": filename,
+                        "section": chunk_info.get("section"),
+                        "kind": chunk_info.get("kind"),
+                    },
+                ))
+            for b in range(0, len(group_points), QDRANT_BATCH):
+                uploads.append(asyncio.create_task(asyncio.to_thread(
+                    self.qclient.upsert, collection_name=collection_name, points=group_points[b:b + QDRANT_BATCH])))
+            qdrant_points.extend(group_points)
+            if report_progress:
+                progress.embedding_progress(str(doc_id), g1, len(all_texts), started_at=start_embed)
+
+    def _delete_doc_vectors(self, collection_name: str, doc_id) -> None:
+        try:
+            self.qclient.delete(
+                collection_name=collection_name,
+                points_selector=qmodels.FilterSelector(filter=qmodels.Filter(must=[
+                    qmodels.FieldCondition(key="doc_id", match=qmodels.MatchValue(value=str(doc_id)))
+                ])),
+            )
+        except Exception as e:
+            logger.critical(f"Could not remove vectors of {doc_id} after a failure: {e}")
+
+    @staticmethod
+    def _table_rows(doc_id, kb_id, parsed_pages, filename) -> List[DocumentTable]:
+        """Tables to store for exact calculations, within a cell budget so a
+        huge workbook cannot bloat the database."""
+        from app.services.table_qa import extract_tables
+        try:
+            tables = extract_tables(parsed_pages)
+        except Exception as e:
+            logger.warning(f"Table extraction skipped for {filename}: {e}")
+            return []
+        budget = settings.TABLE_QA_MAX_CELLS
+        out = []
+        for t in tables:
+            cells = len(t.rows) * len(t.columns)
+            if cells > budget:
+                logger.info(f"{filename}: table '{t.name}' not stored for calculations (cell budget reached).")
+                continue
+            budget -= cells
+            out.append(DocumentTable(doc_id=doc_id, kb_id=kb_id, name=t.name, page_number=t.page_number,
+                                     columns=t.columns, rows=t.rows, n_rows=len(t.rows)))
+        return out
 
     async def delete_document(self, db: AsyncSession, doc_id: uuid.UUID) -> None:
         """

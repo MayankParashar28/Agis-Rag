@@ -15,7 +15,7 @@ async def suggest_follow_ups(question: str, answer: str, chunks: list, n: int = 
         "SOURCE EXCERPTS below (not from general knowledge), be different from the original question, and "
         'be at most 12 words each. Reply with JSON only: {"questions": ["...", "..."]}.',
         f"Original question: {question}\n\nAnswer given:\n{answer[:1500]}\n\nSOURCE EXCERPTS:\n{context}",
-        temperature=0.4, max_tokens=200,
+        temperature=0.4, max_tokens=200, lite=True,
     )
     qs = (data or {}).get("questions") if data else None
     if not isinstance(qs, list):

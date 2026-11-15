@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import { ExternalLink, FileText, Globe, Highlighter, X } from "lucide-react";
+import { Calculator, ExternalLink, FileText, Globe, Highlighter, X } from "lucide-react";
 import { api, ChunkContext, Citation, DocumentInfo } from "@/lib/api";
 import { errorMessage } from "@/lib/hooks";
 import { Alert, Skeleton, Spinner } from "@/components/ui";
+import MarkdownRenderer from "@/components/MarkdownRenderer";
 
 // pdf.js is ~400 KB; load it only when a PDF is opened in the panel.
 const PdfPassage = dynamic(() => import("./PdfPassage"), { ssr: false, loading: () => <div className="flex h-full items-center justify-center"><Spinner className="h-5 w-5 text-accent" /></div> });
@@ -45,6 +46,7 @@ export default function CitationViewer({ citation, kbDocs, onClose }: Props) {
     const done = (data: Loaded) => !cancelled && setLoaded({ key, data });
 
     (async () => {
+      if (citation.kind === "calculation") return done({ kind: "web" }); // nothing to fetch; rendered from the citation
       if (citation.url && !citation.chunk_id) return done({ kind: "web" });
       if (citation.chunk_id) {
         try {
@@ -127,7 +129,7 @@ export default function CitationViewer({ citation, kbDocs, onClose }: Props) {
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-foreground" title={citation.source_doc}>{citation.source_doc}</p>
             <p className="text-xs text-muted-foreground">
-              {page != null ? `Page ${page}` : citation.url ? "Web result" : "Passage"}
+              {citation.kind === "calculation" ? "Exact calculation over the table" : page != null ? `Page ${page}` : citation.url ? "Web result" : "Passage"}
               {typeof citation.score === "number" && citation.score > 0 && ` · relevance ${(citation.score * 100).toFixed(0)}%`}
             </p>
           </div>
@@ -153,6 +155,8 @@ export default function CitationViewer({ citation, kbDocs, onClose }: Props) {
               <Alert tone="warning">{data.reason}</Alert>
               {citation.snippet && <Passage text={citation.snippet} />}
             </>
+          ) : citation.kind === "calculation" ? (
+            <CalculationBody citation={citation} />
           ) : data.kind === "web" ? (
             <Passage text={citation.snippet || "No preview available for this web result."} />
           ) : data.kind === "context" ? (
@@ -211,5 +215,35 @@ function Passage({ text }: { text: string }) {
         <mark className="cite-mark">{text}</mark>
       </p>
     </blockquote>
+  );
+}
+
+/** How a calculated answer was produced: the tables used, the result, and the query. */
+function CalculationBody({ citation }: { citation: Citation }) {
+  const text = citation.snippet || "";
+  const result = text.split("\nResult:\n")[1] ?? "";
+  const scope = text.split("\n")[0].replace(/^Exact calculation over the full table data of /, "");
+  return (
+    <div className="space-y-4 text-sm">
+      <div className="flex gap-2.5 rounded-lg border border-accent/40 bg-accent-soft/40 p-3 text-xs text-foreground">
+        <Calculator className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+        <p>
+          This figure was computed by a database query over <strong>every row</strong> of {scope || "the table"}, not
+          estimated from a few passages. You can check the query below.
+        </p>
+      </div>
+      {result && (
+        <section>
+          <p className="eyebrow mb-1.5 text-[10px]">Result</p>
+          <div className="overflow-x-auto rounded-lg border border-border p-3"><MarkdownRenderer content={result} /></div>
+        </section>
+      )}
+      {citation.sql && (
+        <section>
+          <p className="eyebrow mb-1.5 text-[10px]">Query</p>
+          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-surface-muted p-3 font-mono text-xs text-foreground">{citation.sql}</pre>
+        </section>
+      )}
+    </div>
   );
 }

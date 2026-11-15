@@ -40,12 +40,18 @@ async def decompose(query: str) -> Tuple[List[str], Optional[llm.Usage]]:
     """Return (sub_questions, usage). A simple question returns [query]."""
     if not looks_compound(query):
         return [query], None
+    # Separate questions in one message ("When ...? Who ...?") split cleanly
+    # on their question marks; no model call needed.
+    if query.count("?") >= 2:
+        parts = heuristic_split(query)
+        if len(parts) > 1:
+            return parts, None
     if llm.llm_available():
         data, usage = await llm.complete_json(
             "Split the user's question into the smallest set of independent, self-contained search questions "
             f"(at most {MAX_SUB_QUESTIONS}). Each must make sense alone and keep the original wording where possible. "
             'If the question is already a single question, return it unchanged. Reply with JSON only: {"sub_questions": ["..."]}.',
-            query, temperature=0.0, max_tokens=200,
+            query, temperature=0.0, max_tokens=200, lite=True,
         )
         subs = (data or {}).get("sub_questions") if data else None
         if isinstance(subs, list):

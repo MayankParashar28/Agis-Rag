@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from app.core.config import settings
 from app.core.logging import logger
-from app.services.llm_providers import mark_exhausted, provider_chain
+from app.services.llm_providers import mark_exhausted, mark_model_unavailable, provider_chain
 
 
 @dataclass
@@ -105,11 +105,15 @@ def _strip_fences(text: str) -> str:
 
 
 async def complete(system: str, user: str, *, json_mode: bool = False, temperature: float = 0.2,
-                   max_tokens: Optional[int] = None, timeout: float = 40.0) -> Tuple[Optional[str], Optional[Usage]]:
-    """Return (text, usage) from the first provider that answers, or (None, None)."""
+                   max_tokens: Optional[int] = None, timeout: float = 40.0,
+                   lite: bool = False) -> Tuple[Optional[str], Optional[Usage]]:
+    """Return (text, usage) from the first provider that answers, or (None, None).
+
+    `lite=True` is for side tasks: each provider's cheaper model is tried
+    before its main one."""
     import openai
 
-    for provider in provider_chain():
+    for provider in provider_chain(lite=lite):
         try:
             client = (openai.AsyncOpenAI(api_key=provider.api_key, base_url=provider.base_url, timeout=timeout, max_retries=1)
                       if provider.base_url else openai.AsyncOpenAI(api_key=provider.api_key, timeout=timeout, max_retries=1))
@@ -121,7 +125,7 @@ async def complete(system: str, user: str, *, json_mode: bool = False, temperatu
             # Gemini's newer models spend part of max_tokens on internal
             # reasoning, which can leave the visible reply truncated or empty,
             # so the cap is only sent to providers where it means output length.
-            if max_tokens and provider.label != "Gemini":
+            if max_tokens and not provider.label.startswith("Gemini"):
                 kwargs["max_tokens"] = max_tokens
             if json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
@@ -134,6 +138,7 @@ async def complete(system: str, user: str, *, json_mode: bool = False, temperatu
             return (_strip_fences(text) if json_mode else text), usage
         except Exception as e:
             mark_exhausted(provider.label, e)
+            mark_model_unavailable(provider, e)
             logger.warning(f"{provider.label} call failed: {e}")
     return None, None
 

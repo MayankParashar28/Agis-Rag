@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     # --- Models -------------------------------------------------------------
     EMBEDDING_MODEL: str = "BAAI/bge-large-en-v1.5"
     EMBEDDING_DIM: int = 1024          # must match EMBEDDING_MODEL's output size
+    # "torch" or "onnx". ONNX gives identical vectors, about 1.9x faster on two
+    # CPU cores; it needs the onnxruntime package (installed in the Space image).
+    EMBEDDING_BACKEND: str = "torch"
+    EMBEDDING_ONNX_FILE: str = "onnx/model.onnx"
     RERANKER_MODEL: str = "BAAI/bge-reranker-base"
     OPENAI_MODEL: str = "gpt-4o"
 
@@ -112,6 +116,8 @@ class Settings(BaseSettings):
     # 0-1 "percent relevant" reading, so a high gate silently discards chunks
     # that do answer the question. Raise this only with measured results.
     RERANK_SCORE_THRESHOLD: float = 0.05
+    # Tokens of each passage the reranker reads (the model allows 512).
+    RERANK_MAX_TOKENS: int = 256
 
     # --- Ingestion ----------------------------------------------------------
     MAX_UPLOAD_SIZE_MB: int = 50
@@ -123,6 +129,16 @@ class Settings(BaseSettings):
     OCR_LANG: str = "eng"
     OCR_MAX_PAGES: int = 200
     PARSE_TIMEOUT_SECONDS: int = 900
+    # Exact answers from tables: calculation questions are answered with a
+    # read-only SQL query over the stored tables (app/services/table_qa.py).
+    TABLE_QA_ENABLED: bool = True
+    TABLE_QA_MAX_TABLES: int = 5
+    TABLE_QA_MAX_CELLS: int = 600000     # per document
+    # Per-user daily usage limits (reset at 00:00 UTC). 0 = unlimited.
+    # Admins can set a different limit for each user on the Users page.
+    DAILY_QUESTION_LIMIT: int = 100
+    DAILY_TOKEN_LIMIT: int = 300000
+    ADMINS_UNLIMITED: bool = True
     DEFAULT_CHUNK_SIZE: int = 1000
     DEFAULT_CHUNK_OVERLAP: int = 200
     # Uploaded files are staged in Redis and handed to the Celery worker, which
@@ -198,6 +214,12 @@ class Settings(BaseSettings):
     # OpenAI-compatible endpoint. This default is verified to stream, which
     # the chat endpoint requires (it calls completions with stream=True).
     GEMINI_MODEL: str = "gemini-3.5-flash"
+    # Cheaper models for side tasks (question splitting, follow-ups, document
+    # summaries, the confidence check). If a lite model is not available on
+    # the account, calls fall back to the main model automatically.
+    GEMINI_LITE_MODEL: str = "gemini-3.5-flash-lite"
+    OPENAI_LITE_MODEL: str = "gpt-4o-mini"
+    USE_LITE_MODELS: bool = True
     # Used as the RAGAS embeddings model when Gemini is the judge. RAGAS needs
     # embeddings as well as a chat model for answer_relevancy/context_precision.
     GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
@@ -220,6 +242,13 @@ class Settings(BaseSettings):
     # Email Settings
     EMAIL_API_KEY: Optional[str] = None
     EMAIL_FROM_ADDRESS: str = "onboarding@resend.dev"
+
+    # Operational alerts (app/services/alerts.py): e-mail via Resend
+    # (ALERT_EMAIL + EMAIL_API_KEY) and/or a Slack incoming webhook.
+    ALERTS_ENABLED: bool = True
+    ALERT_EMAIL: Optional[str] = None
+    SLACK_WEBHOOK_URL: Optional[str] = None
+    ALERT_COOLDOWN_SECONDS: int = 3600
 
 
     model_config = SettingsConfigDict(

@@ -34,7 +34,7 @@ import { DocumentPicker, KBPicker } from "@/components/chat/SourcePicker";
 import { api, authStorage, AnswerMode, Citation, KnowledgeBase, Conversation, Message, UserNote, DocumentInfo } from "@/lib/api";
 import { ModeSelector } from "@/components/chat/ModeSelector";
 import { toast } from "@/components/ui";
-import { Download, Printer } from "lucide-react";
+import { Calculator, Download, Printer } from "lucide-react";
 
 function ChatPageContent() {
   const router = useRouter();
@@ -457,7 +457,8 @@ function ChatPageContent() {
       (err) => {
         setIsStreaming(false);
         setAgentStatus(`Error: ${err.message}`);
-        
+        // The streaming bubble disappears with isStreaming, so say it where it stays visible.
+        toast(err.message || "The answer could not be generated. Please try again.", "danger");
       }
     );
   };
@@ -960,6 +961,25 @@ function ChatPageContent() {
                             </div>
                           </div>
 
+                          {/* Exact calculation over table data */}
+                          {msg.citations?.some((c) => c.kind === "calculation") && (() => {
+                            const calc = msg.citations!.find((c) => c.kind === "calculation")!;
+                            const cIdx = msg.citations!.indexOf(calc);
+                            return (
+                              <button
+                                onClick={() => setActiveCitation({ ...calc, index: calc.index ?? cIdx + 1 })}
+                                className="mt-4 flex w-full items-center gap-2.5 rounded-lg border border-accent/40 bg-accent-soft/40 px-3 py-2 text-left text-xs transition-colors hover:bg-accent-soft"
+                              >
+                                <Calculator className="h-4 w-4 shrink-0 text-accent" />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block font-semibold text-foreground">Calculated exactly from the table data</span>
+                                  <span className="block truncate text-muted-foreground">{calc.source_doc} · every row counted, not estimated</span>
+                                </span>
+                                <span className="shrink-0 font-medium text-accent">Show how</span>
+                              </button>
+                            );
+                          })()}
+
                           {/* Source Citations */}
                           {msg.citations && msg.citations.length > 0 && (
                             <div className="mt-4 pt-3 border-t border-card-border/30">
@@ -1454,9 +1474,15 @@ function CitationChip({ cit, n, onOpen }: { cit: Citation; n: number; onOpen: ()
       title={cit.snippet ? cit.snippet.slice(0, 280) : "Open the cited passage"}
     >
       <span className="cite-ref m-0 shrink-0">{cit.index ?? n}</span>
-      {cit.url ? <Globe className="h-3 w-3 shrink-0 text-muted-foreground" /> : <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />}
-      <span className="truncate font-medium text-foreground">{cit.source_doc}</span>
-      {cit.page != null && <span className="shrink-0 text-muted-foreground">p.{cit.page}</span>}
+      {cit.kind === "calculation" ? (
+        <Calculator className="h-3 w-3 shrink-0 text-accent" />
+      ) : cit.url ? (
+        <Globe className="h-3 w-3 shrink-0 text-muted-foreground" />
+      ) : (
+        <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+      )}
+      <span className="truncate font-medium text-foreground">{cit.kind === "calculation" ? `Calculated · ${cit.source_doc}` : cit.source_doc}</span>
+      {cit.page != null && cit.kind !== "calculation" && <span className="shrink-0 text-muted-foreground">p.{cit.page}</span>}
     </button>
   );
 }
