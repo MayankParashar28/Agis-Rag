@@ -43,6 +43,10 @@ async def process_document(doc_id_str: str, file_path: Optional[str], filename: 
 
     async def mark_failed(message: str) -> None:
         progress.report(doc_id_str, "failed", message=message)
+        from app.services.alerts import alert
+        # Keyed by the reason, so ten files failing the same way send one alert.
+        alert("indexing_failed", "A document failed to index",
+              {"document": filename, "document id": doc_id_str, "reason": message[:400]}, key=message[:80])
         # A fresh session: the one that failed may hold a broken connection.
         try:
             async with SessionLocal() as db:

@@ -56,7 +56,7 @@ async def summarize_document(filename: str, text: str) -> Dict:
         '{"summary": "<2-3 plain sentences saying what the document is and what it covers>", '
         '"keywords": ["<5-8 short topical keywords or phrases>"]}. No markdown.',
         f"Document name: {filename}\n\nContent (excerpts):\n{_sample(text)}",
-        temperature=0.1, max_tokens=400,
+        temperature=0.1, max_tokens=400, lite=True,
     )
     if not data or not isinstance(data.get("summary"), str):
         return fallback

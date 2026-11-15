@@ -539,6 +539,9 @@ async def stream_agentic_rag(
                         break
 
             if not answered:
+                from app.services.alerts import alert
+                alert("llm_unavailable", "No AI provider could answer; users get the offline fallback",
+                      {"reason": str(last_failure)[:400]}, key="all")
                 # Dumping the raw context with an "Error..." prefix was not a
                 # synthesis and did not say what went wrong. Use the real local
                 # synthesizer and name the actual cause - a quota clears on its
@@ -679,7 +682,7 @@ async def stream_agentic_rag(
                 return [], None
 
         eval_res, (follow_ups, fu_usage) = await asyncio.gather(_judge(), _followups())
-        usage_total.add(gen_usage).add(fu_usage)
+        usage_total.add(gen_usage).add(fu_usage).add((eval_res or {}).get("judge_usage"))
         scored = (eval_res or {}).get("confidence_score")
         if isinstance(scored, (int, float)):
             confidence = float(scored)

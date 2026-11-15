@@ -1,6 +1,5 @@
 import uuid
 import time
-import json
 from typing import TypedDict, List, Dict, Any, Literal, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from langgraph.graph import StateGraph, END
@@ -9,8 +8,6 @@ import openai
 from app.core.config import settings
 from app.core.logging import logger
 from app.services.search import retrieval_pipeline
-from app.services.llm_providers import provider_chain, mark_exhausted
-from app.services.llm_errors import describe_llm_failure
 from tenacity import retry, wait_exponential, stop_after_attempt
 import httpx
 
@@ -101,6 +98,12 @@ async def retrieve_context_node(state: AgentState) -> Dict[str, Any]:
         # 1. Search Knowledge Base (Hybrid Search), with query decomposition:
         # a compound question is also searched as its parts, and the
         # candidates are merged before reranking against the full question.
+        # The full question is searched straight away, while the model splits
+        # it, so a compound question no longer waits for the split before any
+        # search starts. The sub-questions are searched once they arrive.
+        import asyncio as _asyncio
+        full_search = _asyncio.create_task(retrieval_pipeline.search_hybrid(
+            db, kb_id, query_to_search, doc_ids, top_k=settings.RETRIEVAL_TOP_K, timings=stage_timings))
         if settings.QUERY_DECOMPOSITION and state.get("decompose", True):
             from app.services.decompose import decompose
             try:
@@ -108,14 +111,15 @@ async def retrieve_context_node(state: AgentState) -> Dict[str, Any]:
             except Exception as e:
                 logger.warning(f"Query decomposition skipped: {e}")
                 sub_questions = [query_to_search]
+        retrieved_chunks.extend(await full_search)
         queries = [query_to_search] + [q for q in sub_questions if q.strip().lower() != query_to_search.strip().lower()]
-        import asyncio as _asyncio
-        results = await _asyncio.gather(*[
-            retrieval_pipeline.search_hybrid(db, kb_id, q, doc_ids, top_k=settings.RETRIEVAL_TOP_K, timings=stage_timings)
-            for q in queries
-        ])
-        for chunks in results:
-            retrieved_chunks.extend(chunks)
+        if len(queries) > 1:
+            results = await _asyncio.gather(*[
+                retrieval_pipeline.search_hybrid(db, kb_id, q, doc_ids, top_k=settings.RETRIEVAL_TOP_K, timings=stage_timings)
+                for q in queries[1:]
+            ])
+            for chunks in results:
+                retrieved_chunks.extend(chunks)
         retrieved_chunks = _dedupe(retrieved_chunks)
         logger.info(f"Retrieved {len(retrieved_chunks)} chunks from KB for {len(queries)} query variant(s).")
     
@@ -304,64 +308,44 @@ async def self_evaluate_node(state: AgentState) -> Dict[str, Any]:
     response = state["response"]
     chunks = state["reranked_chunks"]
     
+    # The judge only needs the passages the answer could draw on, trimmed:
+    # sending every reranked chunk in full made this check cost about as
+    # much as the answer itself.
+    judged = chunks[: settings.RERANK_TOP_N]
     context_str = ""
-    for idx, chunk in enumerate(chunks):
-        context_str += f"[Source {idx+1}] File: {chunk['filename']}, Page: {chunk.get('page_number', 'N/A')}\nContent: {chunk['content']}\n\n"
-        
+    for idx, chunk in enumerate(judged):
+        context_str += (f"[Source {idx+1}] File: {chunk.get('filename')}, Page: {chunk.get('page_number', 'N/A')}\n"
+                        f"Content: {(chunk.get('content') or '')[:1500]}\n\n")
+
     confidence = None
-    
+    judge_usage = None
+
     if (settings.GEMINI_API_KEY or settings.OPENAI_API_KEY) and chunks:
+        from app.services import llm as llm_helper
+        eval_system_prompt = (
+            "You are an expert RAG auditor. You will evaluate the faithfulness of an assistant's response given a set of retrieved source chunks. "
+            "Faithfulness measures whether the response is fully factual and supported ONLY by the provided source chunks (no outside information, no hallucinations).\n"
+            "Return a JSON object with keys 'score' (an integer from 0 to 100) and 'reasoning' (a brief sentence explaining the score)."
+        )
+        eval_user_prompt = (
+            f"Retrieved Source Chunks:\n{context_str}\n\n"
+            f"User Query: {query}\n\n"
+            f"Assistant Response:\n{response[:4000]}\n\n"
+            "Evaluate and output JSON only."
+        )
         try:
-            eval_system_prompt = (
-                "You are an expert RAG auditor. You will evaluate the faithfulness of an assistant's response given a set of retrieved source chunks. "
-                "Faithfulness measures whether the response is fully factual and supported ONLY by the provided source chunks (no outside information, no hallucinations).\n"
-                "Return a JSON object with keys 'score' (an integer from 0 to 100) and 'reasoning' (a brief sentence explaining the score)."
-            )
-            eval_user_prompt = (
-                f"Retrieved Source Chunks:\n{context_str}\n\n"
-                f"User Query: {query}\n\n"
-                f"Assistant Response:\n{response}\n\n"
-                "Evaluate and output JSON only."
-            )
-            
-            # Walk the chain: a provider that is out of quota hands this to
-            # the next one instead of dropping the whole audit to regex.
-            for provider in provider_chain():
-                try:
-                    client = (
-                        openai.AsyncOpenAI(
-                            api_key=provider.api_key, base_url=provider.base_url
-                        )
-                        if provider.base_url
-                        else openai.AsyncOpenAI(api_key=provider.api_key)
-                    )
-                    completion = await client.chat.completions.create(
-                        model=provider.model,
-                        messages=[
-                            {"role": "system", "content": eval_system_prompt},
-                            {"role": "user", "content": eval_user_prompt}
-                        ],
-                        temperature=0.0,
-                        response_format={"type": "json_object"}
-                    )
-                    res_content = completion.choices[0].message.content
-                    eval_data = json.loads(res_content)
-                    confidence = float(eval_data.get("score", 80.0))
-                    reasoning = eval_data.get("reasoning", "")
-                    logger.info(
-                        f"LangGraph Agent: LLM Self-Evaluation Score: {confidence:.2f}% "
-                        f"({provider.label}) | Reasoning: {reasoning}"
-                    )
-                    break
-                except Exception as e:
-                    mark_exhausted(provider.label, e)
-                    logger.warning(
-                        f"Self-evaluation via {provider.label} failed: "
-                        f"{describe_llm_failure(e, provider.label)}"
-                    )
+            # Cheaper model first; the helper walks the provider chain and
+            # falls back to the main model when the lite one is unavailable.
+            eval_data, judge_usage = await llm_helper.complete_json(
+                eval_system_prompt, eval_user_prompt, temperature=0.0, lite=True)
+            if eval_data and eval_data.get("score") is not None:
+                confidence = max(0.0, min(100.0, float(eval_data.get("score"))))
+                logger.info(f"LangGraph Agent: LLM Self-Evaluation Score: {confidence:.2f}% "
+                            f"({judge_usage.provider if judge_usage else '?'}) | Reasoning: {eval_data.get('reasoning', '')}")
         except Exception as e:
             logger.error(f"Failed LLM self-evaluation: {str(e)}. Falling back to regex heuristics.")
-            
+            confidence = None
+
     confidence_method = "llm" if confidence is not None else "heuristic"
 
     if confidence is None:
@@ -395,6 +379,7 @@ async def self_evaluate_node(state: AgentState) -> Dict[str, Any]:
         # Callers surface this: a judged score and a lexical-overlap proxy are
         # not the same measurement and must not be presented as one.
         "confidence_method": confidence_method,
+        "judge_usage": judge_usage,
         "latency_breakdown": latencies
     }
 

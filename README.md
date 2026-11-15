@@ -90,7 +90,7 @@ PostgreSQL is the source of truth. Every chunk is stored there with its text, pa
 6. **Table calculation.** Running in parallel with retrieval: if the question asks for a calculation and a relevant table exists, the result of an exact SQL query becomes the first source.
 7. **Prompt construction.** Sources are wrapped as untrusted data and instruction-like text is removed (see [Security](#security)).
 8. **Generation.** The answer streams to the browser token by token over Server-Sent Events, with citations.
-9. **Scoring and logging.** A confidence score is computed, follow-up questions are drafted, and latency, tokens and cost are written to the query log.
+9. **Scoring and logging.** A confidence score is computed and follow-up questions are drafted, both on a cheaper model, and latency, tokens and cost are written to the query log.
 
 ## How a document is indexed
 
@@ -212,6 +212,9 @@ All settings are environment variables, documented in `.env.example` and defined
 | `TABLE_QA_ENABLED`, `TABLE_QA_MAX_TABLES` | true, 5 | Exact answers from tables |
 | `DAILY_QUESTION_LIMIT`, `DAILY_TOKEN_LIMIT`, `ADMINS_UNLIMITED` | 100, 300000, true | Usage limits (0 means unlimited) |
 | `ANSWER_CACHE_ENABLED`, `ANSWER_CACHE_SIMILARITY` | true, 0.95 | Semantic answer cache |
+| `USE_LITE_MODELS`, `GEMINI_LITE_MODEL`, `OPENAI_LITE_MODEL` | true, `gemini-3.5-flash-lite`, `gpt-4o-mini` | Cheaper models for side tasks, with automatic fallback to the main model |
+| `ALERT_EMAIL`, `EMAIL_API_KEY`, `SLACK_WEBHOOK_URL` | unset | Operational alerts by e-mail (Resend) and/or Slack |
+| `EMBEDDING_BACKEND` | `torch` | `onnx` for the same embeddings through ONNX Runtime |
 | `QUERY_DECOMPOSITION`, `FOLLOW_UP_SUGGESTIONS`, `CONTEXTUAL_EMBEDDINGS` | true | Answer and retrieval features |
 | `LLM_PRICING_JSON` | built-in table | Price overrides for cost estimates, in USD per million tokens |
 | `LLAMAPARSE_API_KEY`, `TAVILY_API_KEY`, `GOOGLE_CLIENT_ID` | unset | Optional integrations |
@@ -242,6 +245,8 @@ Secrets are set as Space secrets, never committed. New database columns are adde
 ## Observability
 
 Every answered question is recorded in `query_logs` with total, embedding and retrieval latency, retrieval score, hallucination estimate, rating, model, token counts, estimated cost, answer mode and cache status. The Analytics page charts these over time and breaks cost down by day, knowledge base and model. Costs are estimates from a pricing table that can be overridden with `LLM_PRICING_JSON`. The Audit Log records administrative and destructive actions with the acting user.
+
+Operational alerts are sent by e-mail (Resend) and/or to a Slack channel when the server returns an unexpected error, a document fails to index, the database is unreachable at startup, an AI provider runs out of quota, or no provider can answer. Each alert is sent at most once per hour for the same cause. Configure `ALERT_EMAIL` with `EMAIL_API_KEY`, or `SLACK_WEBHOOK_URL`; without either, alerts are written to the log only.
 
 ## Security
 

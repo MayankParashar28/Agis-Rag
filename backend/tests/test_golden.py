@@ -41,7 +41,7 @@ async def test_llm_empty_reply_falls_through_to_next_provider(monkeypatch):
 
     providers = [types.SimpleNamespace(label="Gemini", model="g", api_key="k", base_url="u"),
                  types.SimpleNamespace(label="OpenAI", model="o", api_key="k", base_url=None)]
-    monkeypatch.setattr(llm, "provider_chain", lambda: providers)
+    monkeypatch.setattr(llm, "provider_chain", lambda **kw: providers)
     sent = []
 
     class FakeClient:
