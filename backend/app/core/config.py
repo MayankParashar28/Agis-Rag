@@ -99,8 +99,8 @@ class Settings(BaseSettings):
     # --- Models -------------------------------------------------------------
     EMBEDDING_MODEL: str = "BAAI/bge-large-en-v1.5"
     EMBEDDING_DIM: int = 1024          # must match EMBEDDING_MODEL's output size
-    # "torch" or "onnx". ONNX gives identical vectors about 20% faster on CPU;
-    # it needs the optimum[onnxruntime] package (installed in the Space image).
+    # "torch" or "onnx". ONNX gives identical vectors, about 1.9x faster on two
+    # CPU cores; it needs the onnxruntime package (installed in the Space image).
     EMBEDDING_BACKEND: str = "torch"
     EMBEDDING_ONNX_FILE: str = "onnx/model.onnx"
     RERANKER_MODEL: str = "BAAI/bge-reranker-base"

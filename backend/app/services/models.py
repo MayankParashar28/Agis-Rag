@@ -9,15 +9,17 @@ logger = logging.getLogger("enterprise_rag.models")
 _embed_model = None
 _reranker = None
 
-def _load_embedder(device: str) -> SentenceTransformer:
+def _load_embedder(device: str):
     """Load the embedding model. EMBEDDING_BACKEND=onnx runs the same model
-    through ONNX Runtime: identical vectors, about 20% faster on CPU. Any
-    problem loading it falls back to the regular PyTorch model."""
+    through ONNX Runtime (app/services/onnx_embedder.py): identical vectors,
+    faster on CPU. Any problem loading it falls back to PyTorch."""
     if settings.EMBEDDING_BACKEND == "onnx" and device == "cpu":
         try:
-            logger.info(f"Loading SentenceTransformer {settings.EMBEDDING_MODEL} with the ONNX backend...")
-            return SentenceTransformer(settings.EMBEDDING_MODEL, device=device, backend="onnx",
-                                       model_kwargs={"file_name": settings.EMBEDDING_ONNX_FILE})
+            from app.services.onnx_embedder import OnnxEmbedder
+            logger.info(f"Loading {settings.EMBEDDING_MODEL} with ONNX Runtime...")
+            model = OnnxEmbedder(settings.EMBEDDING_MODEL, settings.EMBEDDING_ONNX_FILE)
+            logger.info("Embedding backend: ONNX Runtime.")
+            return model
         except Exception as e:
             logger.warning(f"ONNX embedding backend unavailable ({e}); using PyTorch.")
     logger.info(f"Loading SentenceTransformer {settings.EMBEDDING_MODEL} on device: {device}...")

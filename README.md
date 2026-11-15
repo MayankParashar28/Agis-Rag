@@ -214,7 +214,7 @@ All settings are environment variables, documented in `.env.example` and defined
 | `ANSWER_CACHE_ENABLED`, `ANSWER_CACHE_SIMILARITY` | true, 0.95 | Semantic answer cache |
 | `USE_LITE_MODELS`, `GEMINI_LITE_MODEL`, `OPENAI_LITE_MODEL` | true, `gemini-3.5-flash-lite`, `gpt-4o-mini` | Cheaper models for side tasks, with automatic fallback to the main model |
 | `ALERT_EMAIL`, `EMAIL_API_KEY`, `SLACK_WEBHOOK_URL` | unset | Operational alerts by e-mail (Resend) and/or Slack |
-| `EMBEDDING_BACKEND` | `torch` (`onnx` in the Space image) | `onnx` runs the same embeddings through ONNX Runtime: identical vectors, about 1.7 times faster on two CPU cores |
+| `EMBEDDING_BACKEND` | `torch` (`onnx` in the Space image) | `onnx` runs the same embeddings through ONNX Runtime: identical vectors, about 1.9 times faster on two CPU cores |
 | `QUERY_DECOMPOSITION`, `FOLLOW_UP_SUGGESTIONS`, `CONTEXTUAL_EMBEDDINGS` | true | Answer and retrieval features |
 | `LLM_PRICING_JSON` | built-in table | Price overrides for cost estimates, in USD per million tokens |
 | `LLAMAPARSE_API_KEY`, `TAVILY_API_KEY`, `GOOGLE_CLIENT_ID` | unset | Optional integrations |
