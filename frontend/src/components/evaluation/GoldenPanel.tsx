@@ -66,7 +66,11 @@ function GoldenPanelInner({ kbId }: { kbId: string }) {
     try {
       const res = await api.suggestGoldenQuestions(kbId, 5);
       setDrafts(res.items);
-      if (!res.items.length) setNotice({ tone: "warning", text: "No suggestions could be drafted. Index a document first." });
+      if (!res.items.length) {
+        setNotice({ tone: "warning", text: res.reason || "No questions could be drafted from this knowledge base. Add some manually with Add." });
+      } else if (res.method === "heuristic") {
+        setNotice({ tone: "warning", text: "Drafted from the document text without an AI model (none was reachable). Review and edit them before adding." });
+      }
     } catch (e) {
       setNotice({ tone: "danger", text: errorMessage(e, "Could not draft questions.") });
     } finally {

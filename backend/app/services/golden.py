@@ -17,7 +17,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -167,34 +167,93 @@ async def run_golden(db: AsyncSession, kb_id: uuid.UUID, threshold: Optional[flo
     return {"id": str(record.id), "kb_id": str(kb_id), "method": method, "created_at": record.created_at.isoformat(), **record.details}
 
 
-async def suggest_questions(db: AsyncSession, kb_id: uuid.UUID, n: int = 5) -> List[Dict[str, str]]:
-    """Draft golden questions from random passages of the knowledge base."""
+def _sentences(text: str) -> List[str]:
+    text = re.sub(r"^#+\s.*$", "", text, flags=re.M)      # drop Markdown headings
+    text = re.sub(r"\s+", " ", text.replace("|", " ")).strip()
+    return [x.strip() for x in re.split(r"(?<=[.!?])\s+", text) if x.strip()]
+
+
+def _heuristic_drafts(sample, n: int) -> List[Dict[str, str]]:
+    """Drafts without a model: pick the most informative sentence of each
+    passage (prefer ones with numbers, dates or names) and ask about it."""
+    out: List[Dict[str, str]] = []
+    for content, filename in sample:
+        best = None
+        for sent in _sentences(content):
+            if not 40 <= len(sent) <= 300:
+                continue
+            score = len(re.findall(r"\d", sent)) * 3 + len(re.findall(r"\b[A-Z][a-z]+", sent)) + min(len(sent), 200) / 100
+            if best is None or score > best[0]:
+                best = (score, sent)
+        if best:
+            sent = best[1]
+            topic = " ".join(sent.split()[:8]).rstrip(",;:")
+            out.append({"question": f"What does {filename} say about \"{topic}…\"?", "expected_answer": sent})
+        if len(out) >= n:
+            break
+    return out
+
+
+def _extract_items(data: Any) -> List[Dict[str, str]]:
+    """Accept the shapes models actually return: {"items": [...]},
+    {"questions": [...]}, any list-valued key, or a bare list; and
+    question/answer field name variants."""
+    if isinstance(data, dict):
+        lists = [v for v in data.values() if isinstance(v, list)]
+        data = data.get("items") or data.get("questions") or (lists[0] if lists else [])
+    if not isinstance(data, list):
+        return []
+    out = []
+    for it in data:
+        if not isinstance(it, dict):
+            continue
+        q = it.get("question") or it.get("q")
+        a = it.get("expected_answer") or it.get("answer") or it.get("expected") or it.get("a")
+        if q and a:
+            out.append({"question": str(q).strip(), "expected_answer": str(a).strip()})
+    return out
+
+
+async def suggest_questions(db: AsyncSession, kb_id: uuid.UUID, n: int = 5) -> Tuple[List[Dict[str, str]], Optional[str], str]:
+    """Draft golden questions from random passages of the knowledge base.
+
+    Returns (items, reason, method). `reason` explains an empty result;
+    `method` is "llm" or "heuristic".
+    """
+    import json
+
+    total_docs = (await db.execute(select(func.count(Document.id)).where(Document.kb_id == kb_id))).scalar() or 0
     rows = (await db.execute(
         select(DocumentChunk.content, Document.filename)
         .join(Document, Document.id == DocumentChunk.doc_id)
         .where(Document.kb_id == kb_id, Document.status == "indexed")
     )).all()
     if not rows:
-        return []
+        reason = ("This knowledge base has no documents yet. Upload one on the Documents page first."
+                  if total_docs == 0 else
+                  "None of this knowledge base's documents has finished indexing yet. Try again when they show Ready.")
+        return [], reason, "none"
+
     sample = random.sample(rows, min(len(rows), 12))
-    if not llm.llm_available():
-        # Without a model: turn the first sentence of a passage into a prompt.
-        out = []
-        for content, filename in sample[:n]:
-            first = re.split(r"(?<=[.!?])\s+", content.strip())[0][:200]
-            if len(first) > 30:
-                out.append({"question": f"According to {filename}, what is stated about: \"{first[:80]}…\"?",
-                            "expected_answer": first})
-        return out
-    excerpts = "\n\n".join(f"[{i + 1}] ({fn}) {c[:900]}" for i, (c, fn) in enumerate(sample))
-    data, _ = await llm.complete_json(
-        f"From the excerpts, write {n} test questions a user might really ask, each answerable from ONE excerpt, "
-        "with a concise expected answer taken from that excerpt (no outside knowledge). Prefer questions about "
-        'specific facts, numbers, dates or rules. Reply with JSON only: {"items": [{"question": "...", "expected_answer": "..."}]}.',
-        excerpts, temperature=0.5, max_tokens=900,
-    )
-    items = (data or {}).get("items") if data else None
-    if not isinstance(items, list):
-        return []
-    return [{"question": str(i.get("question", "")).strip(), "expected_answer": str(i.get("expected_answer", "")).strip()}
-            for i in items if isinstance(i, dict) and i.get("question") and i.get("expected_answer")][:n]
+    if llm.llm_available():
+        excerpts = "\n\n".join(f"[{i + 1}] ({fn}) {c[:900]}" for i, (c, fn) in enumerate(sample))
+        text, _ = await llm.complete(
+            f"From the excerpts, write {n} test questions a user might really ask, each answerable from ONE excerpt, "
+            "with a concise expected answer taken from that excerpt (no outside knowledge). Prefer questions about "
+            'specific facts, numbers, dates or rules. Reply with JSON only: {"items": [{"question": "...", "expected_answer": "..."}]}.',
+            excerpts, json_mode=True, temperature=0.5,
+        )
+        items: List[Dict[str, str]] = []
+        if text:
+            try:
+                items = _extract_items(json.loads(text))
+            except ValueError:
+                logger.warning(f"Golden draft: model reply was not JSON: {text[:200]!r}")
+        if items:
+            return items[:n], None, "llm"
+        logger.warning("Golden draft: the model returned no usable questions; drafting from the text instead.")
+
+    drafts = _heuristic_drafts(sample, n)
+    if drafts:
+        return drafts, None, "heuristic"
+    return [], "The indexed passages are too short to draft questions from. Add questions manually with Add.", "none"

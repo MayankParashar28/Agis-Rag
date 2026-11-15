@@ -527,7 +527,7 @@ export const api = {
     request<GoldenQuestion>("/evaluation/golden", { method: "POST", body: JSON.stringify({ kb_id: kbId, question, expected_answer }) }),
   deleteGoldenQuestion: (id: string) => request<void>(`/evaluation/golden/${id}`, { method: "DELETE" }),
   suggestGoldenQuestions: (kbId: string, n = 5) =>
-    request<{ items: Array<{ question: string; expected_answer: string }> }>("/evaluation/golden/suggest", { method: "POST", body: JSON.stringify({ kb_id: kbId, n }) }),
+    request<{ items: Array<{ question: string; expected_answer: string }>; reason?: string | null; method?: string }>("/evaluation/golden/suggest", { method: "POST", body: JSON.stringify({ kb_id: kbId, n }) }),
   runGolden: (kbId: string, threshold?: number) =>
     request<GoldenRun & { kb_id: string }>("/evaluation/golden/run", { method: "POST", body: JSON.stringify({ kb_id: kbId, threshold }) }),
   goldenRunHistory: (kbId: string) => request<GoldenRun[]>(`/evaluation/golden/${kbId}/runs`, {}, { noCache: true }),

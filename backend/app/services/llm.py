@@ -118,12 +118,18 @@ async def complete(system: str, user: str, *, json_mode: bool = False, temperatu
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
                 temperature=temperature,
             )
-            if max_tokens:
+            # Gemini's newer models spend part of max_tokens on internal
+            # reasoning, which can leave the visible reply truncated or empty,
+            # so the cap is only sent to providers where it means output length.
+            if max_tokens and provider.label != "Gemini":
                 kwargs["max_tokens"] = max_tokens
             if json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
             resp = await client.chat.completions.create(**kwargs)
             text = resp.choices[0].message.content or ""
+            if not text.strip():
+                finish = getattr(resp.choices[0], "finish_reason", None)
+                raise ValueError(f"empty reply (finish_reason={finish})")
             usage = usage_from_response(provider.label, provider.model, getattr(resp, "usage", None), system + user, text)
             return (_strip_fences(text) if json_mode else text), usage
         except Exception as e:
