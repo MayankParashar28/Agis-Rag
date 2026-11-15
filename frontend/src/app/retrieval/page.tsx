@@ -18,7 +18,7 @@ interface TraceChunk {
 }
 
 export default function RetrievalPage() {
-  const allowed = useRequireAuth();
+  const allowed = useRequireAuth({ adminOnly: true });
   const kbsQuery = useApi<KnowledgeBase[]>(allowed ? "/knowledge-bases" : null, api.listKBs);
   const kbs = kbsQuery.data ?? [];
   const [pickedKB, setPickedKB] = useState("");

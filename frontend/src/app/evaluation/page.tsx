@@ -19,7 +19,7 @@ const METRICS: Array<{ key: Metric; name: string; desc: string; color: string }>
 ];
 
 export default function EvaluationPage() {
-  const allowed = useRequireAuth();
+  const allowed = useRequireAuth({ adminOnly: true });
   const router = useRouter();
   const kbsQuery = useApi<KnowledgeBase[]>(allowed ? "/knowledge-bases" : null, api.listKBs);
   const kbs = kbsQuery.data ?? [];

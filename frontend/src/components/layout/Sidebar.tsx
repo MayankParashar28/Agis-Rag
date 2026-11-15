@@ -28,8 +28,6 @@ const sections = [
       { name: "Chat", href: "/chat", icon: MessageSquare },
       { name: "Knowledge Bases", href: "/knowledge-bases", icon: Database },
       { name: "Documents", href: "/upload", icon: UploadCloud },
-      { name: "Retrieval Viewer", href: "/retrieval", icon: SearchCode },
-      { name: "Evaluation", href: "/evaluation", icon: TrendingUp },
     ],
   },
   {
@@ -38,6 +36,8 @@ const sections = [
     items: [
       { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
       { name: "Analytics", href: "/analytics", icon: BarChart3 },
+      { name: "Evaluation", href: "/evaluation", icon: TrendingUp },
+      { name: "Retrieval Viewer", href: "/retrieval", icon: SearchCode },
       { name: "Users", href: "/users", icon: Users },
       { name: "All Documents", href: "/admin/documents", icon: Files },
       { name: "Audit Log", href: "/audit", icon: ScrollText },
