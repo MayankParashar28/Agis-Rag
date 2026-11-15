@@ -115,6 +115,14 @@ class Settings(BaseSettings):
 
     # --- Ingestion ----------------------------------------------------------
     MAX_UPLOAD_SIZE_MB: int = 50
+    # Document reading. Rows beyond TABLE_MAX_ROWS in one sheet/CSV are not
+    # indexed (the document says so). OCR reads scanned PDFs and images when
+    # the tesseract binary is installed.
+    TABLE_MAX_ROWS: int = 20000
+    OCR_ENABLED: bool = True
+    OCR_LANG: str = "eng"
+    OCR_MAX_PAGES: int = 200
+    PARSE_TIMEOUT_SECONDS: int = 900
     DEFAULT_CHUNK_SIZE: int = 1000
     DEFAULT_CHUNK_OVERLAP: int = 200
     # Uploaded files are staged in Redis and handed to the Celery worker, which

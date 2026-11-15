@@ -1,7 +1,7 @@
 import os
 import asyncio
 from typing import List, Dict, Any
-from fastapi import HTTPException
+from app.services.extractors import SUPPORTED_EXTS, ParseError, extract, sniff_problem
 from app.core.config import settings
 from app.core.logging import logger
 
@@ -26,114 +26,62 @@ class DocumentParser:
             language="en"
         )
 
+    # LlamaParse reads layout (multi-column pages, borderless tables) better
+    # than the local readers for these formats. Spreadsheets, CSV and text
+    # are read locally either way: that is exact and costs no quota.
+    LLAMAPARSE_EXTS = {".pdf", ".docx", ".pptx"}
+
     async def parse_file(self, file_path: str, filename: str) -> List[Dict[str, Any]]:
-        """
-        Parses a file and returns a list of dictionaries with content and metadata (e.g. page numbers).
+        """Read a file into pages: [{"content", "page_number", "metadata"}].
+
+        Raises ParseError (a message meant for the user) when the file cannot
+        be read or contains no text.
         """
         ext = os.path.splitext(filename)[1].lower()
-        parser = self.get_parser()
-        
-        # If LlamaParse is enabled, use it for PDFs and Word docs
-        if parser and ext in [".pdf", ".docx"]:
+        problem = sniff_problem(file_path, ext) if ext in SUPPORTED_EXTS else None
+        if problem:
+            raise ParseError(problem)
+
+        parser = self.get_parser() if ext in self.LLAMAPARSE_EXTS else None
+        if parser:
             try:
                 logger.info(f"Parsing {filename} with LlamaParse...")
-                # Run the blocking load_data call in a separate thread to keep loop responsive
-                documents = await asyncio.to_thread(parser.load_data, file_path)
-                
-                if not documents:
-                    logger.warning("LlamaParse returned no documents. Falling back to local parsing.")
-                    return await self._local_parse(file_path, filename, ext)
-                
-                parsed_pages = []
-                for idx, doc in enumerate(documents):
-                    # LlamaParse documents typically contain page information in metadata
-                    page_num = doc.metadata.get("page_number", idx + 1)
-                    parsed_pages.append({
-                        "content": doc.text,
-                        "page_number": int(page_num),
-                        "metadata": {
-                            "filename": filename,
-                            "page": int(page_num),
-                            "source": filename
-                        }
-                    })
-                return parsed_pages
+                documents = await asyncio.wait_for(asyncio.to_thread(parser.load_data, file_path),
+                                                   timeout=settings.PARSE_TIMEOUT_SECONDS)
+                pages = []
+                for idx, doc in enumerate(documents or []):
+                    page_num = int(doc.metadata.get("page_number", idx + 1))
+                    if (doc.text or "").strip():
+                        pages.append({"content": doc.text, "page_number": page_num,
+                                      "metadata": {"filename": filename, "page": page_num, "source": filename,
+                                                   "parser": "llamaparse"}})
+                if pages:
+                    return pages
+                logger.warning(f"LlamaParse returned no text for {filename}; reading it locally.")
             except Exception as e:
-                logger.error(f"LlamaParse error: {str(e)}. Falling back to local parsing.")
-        
-        # Local parsing fallback
+                logger.error(f"LlamaParse error for {filename}: {e}. Reading it locally.")
+
         return await self._local_parse(file_path, filename, ext)
 
     async def _local_parse(self, file_path: str, filename: str, ext: str) -> List[Dict[str, Any]]:
-        logger.info(f"Locally parsing {filename} with extension {ext}...")
-        parsed_pages = []
-
-        if ext == ".txt":
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
-            parsed_pages.append({
-                "content": content,
-                "page_number": 1,
-                "metadata": {"filename": filename, "page": 1, "source": filename}
-            })
-            
-        elif ext == ".csv":
-            import csv
-            content_lines = []
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                reader = csv.reader(f)
-                for row in reader:
-                    content_lines.append(", ".join(row))
-            content = "\n".join(content_lines)
-            parsed_pages.append({
-                "content": content,
-                "page_number": 1,
-                "metadata": {"filename": filename, "page": 1, "source": filename}
-            })
-            
-        elif ext == ".pdf":
-            try:
-                # Use local pdfreader fallback. In python-dependencies we have llama-index which includes fsspec etc.
-                # Let's try PyPDF (which is usually bundled or can be imported easily)
-                import pypdf
-                reader = pypdf.PdfReader(file_path)
-                for idx, page in enumerate(reader.pages):
-                    text = page.extract_text()
-                    parsed_pages.append({
-                        "content": text,
-                        "page_number": idx + 1,
-                        "metadata": {"filename": filename, "page": idx + 1, "source": filename}
-                    })
-            except ImportError:
-                # If pypdf is missing, write a basic placeholder or throw error
-                logger.error("pypdf library not found. Please install it or use LlamaParse.")
-                raise HTTPException(status_code=500, detail="Local PDF parser dependencies missing.")
-            except Exception as e:
-                logger.error(f"Failed local PDF parse: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"Failed to parse PDF: {str(e)}")
-                
-        elif ext == ".docx":
-            try:
-                import docx
-                doc = docx.Document(file_path)
-                fullText = []
-                for para in doc.paragraphs:
-                    fullText.append(para.text)
-                content = '\n'.join(fullText)
-                parsed_pages.append({
-                    "content": content,
-                    "page_number": 1,
-                    "metadata": {"filename": filename, "page": 1, "source": filename}
-                })
-            except ImportError:
-                logger.error("python-docx library not found. Please install it or use LlamaParse.")
-                raise HTTPException(status_code=500, detail="Local DOCX parser dependencies missing.")
-            except Exception as e:
-                logger.error(f"Failed local DOCX parse: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"Failed to parse DOCX: {str(e)}")
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
-
-        return parsed_pages
+        logger.info(f"Locally parsing {filename} ({ext})...")
+        try:
+            # Off the event loop: big PDFs and spreadsheets take seconds of CPU,
+            # and in in-process mode the loop is also serving requests.
+            pages = await asyncio.wait_for(asyncio.to_thread(extract, file_path, filename, ext),
+                                           timeout=settings.PARSE_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            raise ParseError(f"Reading this file took longer than {settings.PARSE_TIMEOUT_SECONDS // 60} minutes. "
+                             "Try splitting it into smaller files.")
+        except ParseError:
+            raise
+        except MemoryError:
+            raise ParseError("This file is too large to read on this server. Try splitting it into smaller files.")
+        except Exception as e:
+            logger.exception(f"Failed to parse {filename}")
+            raise ParseError(f"This file could not be read ({type(e).__name__}: {str(e)[:200]}).")
+        tables = sum(p["content"].count("\n|---") for p in pages)
+        logger.info(f"Parsed {filename}: {len(pages)} page(s), {tables} table(s).")
+        return pages
 
 document_parser = DocumentParser()

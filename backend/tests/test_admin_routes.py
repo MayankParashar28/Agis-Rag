@@ -9,7 +9,7 @@ sys.modules.setdefault("app.services.models", types.SimpleNamespace(get_embeddin
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.api.router import api_router  # noqa: E402
+from app.api.v1 import evaluation, retrieval  # noqa: E402
 from app.api.v1.auth import get_current_active_user  # noqa: E402
 from app.core.database import get_db  # noqa: E402
 
@@ -26,7 +26,8 @@ ADMIN_ONLY = [
 
 def _client(role: str) -> TestClient:
     app = FastAPI()
-    app.include_router(api_router)
+    app.include_router(evaluation.router, prefix="/evaluation")
+    app.include_router(retrieval.router, prefix="/retrieval")
     app.dependency_overrides[get_current_active_user] = lambda: types.SimpleNamespace(id=uuid.uuid4(), role=role, is_active=True)
 
     async def no_db():

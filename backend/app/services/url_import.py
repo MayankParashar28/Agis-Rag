@@ -60,40 +60,104 @@ def _check_scheme(url: str) -> str:
 
 
 class _TextExtractor(HTMLParser):
-    SKIP = {"script", "style", "noscript", "svg", "nav", "footer", "header", "form", "aside", "iframe"}
+    """Readable text from HTML. Headings become Markdown headings and
+    <table>s become Markdown tables, so the chunker keeps them whole."""
+    SKIP = {"script", "style", "noscript", "svg", "nav", "footer", "header", "form", "aside", "iframe", "template"}
     BLOCK = {"p", "div", "section", "article", "br", "li", "tr", "h1", "h2", "h3",
-             "h4", "h5", "h6", "pre", "blockquote", "table", "ul", "ol"}
+             "h4", "h5", "h6", "pre", "blockquote", "table", "ul", "ol", "dd", "dt", "hr"}
+    HEADINGS = {"h1": "# ", "h2": "## ", "h3": "### ", "h4": "#### ", "h5": "##### ", "h6": "###### "}
 
-    def __init__(self):
+    def __init__(self, skip_chrome: bool = True):
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self.title = ""
         self._skip_depth = 0
         self._in_title = False
+        self._skip = self.SKIP if skip_chrome else {"script", "style", "noscript", "svg", "template"}
+        # One entry per open <table>: {"rows": [...], "row": [...] | None, "cell": [...] | None}
+        self._tables: list[dict] = []
+
+    def _sink(self) -> list:
+        """Where text goes right now: the open table cell, or the page."""
+        if self._tables:
+            t = self._tables[-1]
+            if t["cell"] is not None:
+                return t["cell"]
+            return []  # text between cells (whitespace) is dropped
+        return self.parts
 
     def handle_starttag(self, tag, attrs):
-        if tag in self.SKIP:
+        if tag in self._skip:
             self._skip_depth += 1
-        elif tag == "title":
+            return
+        if self._skip_depth:
+            return
+        if tag == "title":
             self._in_title = True
+        elif tag == "table":
+            self._tables.append({"rows": [], "row": None, "cell": None})
+        elif self._tables and tag == "tr":
+            t = self._tables[-1]
+            self._close_row(t)
+            t["row"] = []
+        elif self._tables and tag in ("td", "th"):
+            t = self._tables[-1]
+            if t["row"] is None:
+                t["row"] = []
+            self._close_cell(t)
+            t["cell"] = []
+            span = dict(attrs).get("colspan")
+            t["span"] = int(span) if span and str(span).isdigit() and 1 < int(span) <= 50 else 1
+        elif self._tables:
+            if tag in ("br", "p", "li", "div"):
+                self._sink().append(" ")
         elif tag in self.BLOCK:
             self.parts.append("\n")
-        if tag in ("h1", "h2", "h3") and not self._skip_depth:
-            self.parts.append("## " if tag != "h1" else "# ")
+            if tag in self.HEADINGS:
+                self.parts.append(self.HEADINGS[tag])
+
+    def _close_cell(self, t):
+        if t["cell"] is not None and t["row"] is not None:
+            text = re.sub(r"\s+", " ", "".join(t["cell"])).strip()
+            t["row"].extend([text] * t.get("span", 1))
+        t["cell"] = None
+
+    def _close_row(self, t):
+        self._close_cell(t)
+        if t["row"]:
+            t["rows"].append(t["row"])
+        t["row"] = None
 
     def handle_endtag(self, tag):
-        if tag in self.SKIP and self._skip_depth:
-            self._skip_depth -= 1
-        elif tag == "title":
+        if tag in self._skip:
+            if self._skip_depth:
+                self._skip_depth -= 1
+            return
+        if self._skip_depth:
+            return
+        if tag == "title":
             self._in_title = False
-        elif tag in self.BLOCK:
+        elif tag == "table" and self._tables:
+            from app.services.tables import md_table
+            t = self._tables.pop()
+            self._close_row(t)
+            rendered = md_table(t["rows"])
+            if self._tables:          # nested table: flatten into the outer cell
+                self._sink().append(" ; ".join(" ".join(r) for r in t["rows"]))
+            elif rendered:
+                self.parts.append("\n\n" + rendered + "\n\n")
+        elif self._tables and tag in ("td", "th"):
+            self._close_cell(self._tables[-1])
+        elif self._tables and tag == "tr":
+            self._close_row(self._tables[-1])
+        elif not self._tables and tag in self.BLOCK:
             self.parts.append("\n")
 
     def handle_data(self, data):
         if self._in_title:
             self.title += data
         elif not self._skip_depth:
-            self.parts.append(data)
+            self._sink().append(data)
 
     def text(self) -> str:
         raw = "".join(self.parts)
@@ -102,23 +166,46 @@ class _TextExtractor(HTMLParser):
         return "\n".join(line.strip() for line in raw.splitlines()).strip()
 
 
-def html_to_text(html: str) -> Tuple[str, str]:
-    """Return (title, readable text) for an HTML document."""
-    parser = _TextExtractor()
+def html_to_text(html: str, skip_chrome: bool = True) -> Tuple[str, str]:
+    """Return (title, readable text) for an HTML document. `skip_chrome`
+    drops nav/header/footer, which suits web pages but not saved documents."""
+    parser = _TextExtractor(skip_chrome)
     parser.feed(html)
+    parser.close()
+    while parser._tables:  # unclosed <table> in sloppy HTML
+        parser.handle_endtag("table")
     return parser.title.strip(), parser.text()
 
 
+_CT_EXT = {
+    "application/pdf": ".pdf",
+    "text/csv": ".csv", "application/csv": ".csv",
+    "text/tab-separated-values": ".tsv",
+    "application/json": ".json",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.oasis.opendocument.text": ".odt",
+    "application/vnd.oasis.opendocument.spreadsheet": ".ods",
+    "application/vnd.oasis.opendocument.presentation": ".odp",
+    "application/epub+zip": ".epub",
+    "application/rtf": ".rtf", "text/rtf": ".rtf",
+    "text/markdown": ".md",
+}
+
+
 def _ext_for(content_type: str, url: str) -> Optional[str]:
+    from app.services.extractors import IMAGE_EXTS, SUPPORTED_EXTS
     ct = content_type.split(";")[0].strip().lower()
-    if ct == "application/pdf" or url.lower().endswith(".pdf"):
-        return ".pdf"
-    if ct in ("text/csv", "application/csv") or url.lower().endswith(".csv"):
-        return ".csv"
-    if ct == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        return ".docx"
+    path_ext = "." + urlparse(url).path.rsplit(".", 1)[-1].lower() if "." in urlparse(url).path.rsplit("/", 1)[-1] else ""
+    if ct in _CT_EXT:
+        return _CT_EXT[ct]
     if ct in ("text/html", "application/xhtml+xml"):
         return ".html"
+    # Servers often send files as octet-stream: trust the link's extension.
+    if path_ext in SUPPORTED_EXTS and path_ext not in IMAGE_EXTS and path_ext not in (".html", ".htm"):
+        return path_ext
     if ct.startswith("text/"):
         return ".txt"
     return None
@@ -161,7 +248,7 @@ async def fetch_url(url: str, max_bytes: int) -> FetchedDocument:
                 if ext is None:
                     raise UrlImportError(
                         f"Unsupported content type '{resp.headers.get('content-type', 'unknown')}'. "
-                        "Links to web pages, PDF, DOCX, CSV or text files can be imported.")
+                        "Links to web pages and documents (PDF, Word, Excel, PowerPoint, CSV, text) can be imported.")
                 body = bytearray()
                 async for chunk in resp.aiter_bytes():
                     body.extend(chunk)
@@ -179,5 +266,5 @@ async def fetch_url(url: str, max_bytes: int) -> FetchedDocument:
         return FetchedDocument((header + text).encode("utf-8"), ".txt", title, url)
 
     title = urlparse(url).path.rsplit("/", 1)[-1] or urlparse(url).netloc
-    title = re.sub(r"\.(pdf|csv|txt|docx)$", "", title, flags=re.I)
+    title = re.sub(r"\.[A-Za-z0-9]{2,5}$", "", title)
     return FetchedDocument(bytes(body), ext, title, url)
