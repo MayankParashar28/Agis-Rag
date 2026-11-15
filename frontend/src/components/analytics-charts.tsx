@@ -15,6 +15,17 @@ interface ChartProps {
   unit?: string;
   height?: number;
   description?: string;
+  /** Formats values (axis, headline, tooltip). Overrides `unit`. */
+  format?: (v: number) => string;
+  /** Replaces the latest-value headline, e.g. a total for the whole window. */
+  headline?: { value: string; caption: string };
+}
+
+/** Small values (costs in cents) keep two significant digits instead of rounding to 0.0. */
+function defaultFormat(v: number, unit: string): string {
+  const abs = Math.abs(v);
+  const text = abs > 0 && abs < 1 ? String(Number(v.toPrecision(2))) : v.toFixed(abs < 10 ? 1 : 0);
+  return `${text}${unit}`;
 }
 
 export function SVGLineChart({
@@ -25,7 +36,10 @@ export function SVGLineChart({
   unit = "",
   height = 200,
   description,
+  format,
+  headline,
 }: ChartProps) {
+  const fmt = (v: number) => (format ? format(v) : defaultFormat(v, unit));
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
   // Match the viewBox to the measured width so text keeps its real size.
@@ -49,7 +63,10 @@ export function SVGLineChart({
   const padY = 16;
   const chartHeight = height - padY * 2;
   const values = data.map((d) => d.value);
-  const maxValue = Math.max(...values, 1);
+  // Scale to the data: a fixed floor of 1 flattened small series (daily
+  // costs of a fraction of a cent) into the axis.
+  const top = values.length ? Math.max(...values) : 0;
+  const maxValue = top > 0 ? top : 1;
   const minValue = Math.min(...values, 0);
   const range = maxValue - minValue || 1;
   const width = Math.max(measuredWidth, 240);
@@ -60,8 +77,11 @@ export function SVGLineChart({
     const y = padY + chartHeight - ((d.value - minValue) / range) * chartHeight;
     return { x, y, ...d };
   });
-  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
-  const areaPath = points.length
+  // One point draws no line; show it as a level line across the chart.
+  const linePath = points.length === 1
+    ? `M ${padX} ${points[0].y} L ${padX + chartWidth} ${points[0].y}`
+    : points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
+  const areaPath = points.length > 1
     ? `${linePath} L ${points[points.length - 1].x} ${height - padY} L ${points[0].x} ${height - padY} Z`
     : "";
   const hovered = hoveredIdx !== null ? points[hoveredIdx] : null;
@@ -73,10 +93,14 @@ export function SVGLineChart({
           <h3 className="text-sm font-semibold text-foreground">{title}</h3>
           {description && <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>}
         </div>
-        {latest !== null && (
+        {headline ? (
+          <span className="shrink-0 text-right">
+            <span className="block text-lg font-semibold tabular-nums text-foreground">{headline.value}</span>
+            <span className="block text-[11px] text-muted-foreground">{headline.caption}</span>
+          </span>
+        ) : latest !== null && (
           <span className="shrink-0 text-lg font-semibold tabular-nums text-foreground">
-            {latest.toFixed(1)}
-            <span className="ml-0.5 text-xs font-medium text-muted-foreground">{unit}</span>
+            {fmt(latest)}
           </span>
         )}
       </div>
@@ -100,8 +124,7 @@ export function SVGLineChart({
                   <g key={f}>
                     <line x1={padX} y1={y} x2={width - 12} y2={y} stroke="#e3ddd3" strokeDasharray={f === 1 ? undefined : "3 4"} />
                     <text x={padX - 8} y={y + 3.5} fill="#66625c" fontSize="10" textAnchor="end">
-                      {v.toFixed(v < 10 ? 1 : 0)}
-                      {unit}
+                      {fmt(v)}
                     </text>
                   </g>
                 );
@@ -121,7 +144,7 @@ export function SVGLineChart({
                 className="pointer-events-none absolute -translate-x-1/2 -translate-y-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs shadow-[var(--shadow-md)]"
                 style={{ left: `${(hovered.x / width) * 100}%`, top: hovered.y - 8 }}
               >
-                <span className="font-semibold tabular-nums">{hovered.value.toFixed(1)}{unit}</span>
+                <span className="font-semibold tabular-nums">{fmt(hovered.value)}</span>
                 <span className="ml-1.5 text-muted-foreground">{hovered.label}</span>
               </div>
             )}
