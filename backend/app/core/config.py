@@ -134,6 +134,14 @@ class Settings(BaseSettings):
     ANSWER_CACHE_TTL_SECONDS: int = 86400
     ANSWER_CACHE_MAX_ENTRIES: int = 50
 
+    # --- Indexing execution mode ---------------------------------------------
+    # "celery": a separate Celery worker indexes uploads (needs Redis as the
+    #   broker; this is what docker-compose runs).
+    # "inprocess": the API indexes uploads itself in the background. No broker
+    #   or worker process needed - for single-container hosts such as
+    #   Hugging Face Spaces.
+    INDEXING_MODE: str = "celery"
+
     # --- Object storage for original files ----------------------------------
     # "local" keeps uploads on this server's disk (lost on hosts that wipe the
     # disk on deploy). "s3" works with AWS S3, Cloudflare R2, Supabase Storage

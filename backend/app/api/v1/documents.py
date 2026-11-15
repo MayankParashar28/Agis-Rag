@@ -46,6 +46,14 @@ async def _dispatch_processing(doc_id: str, file_path: str, filename: str,
     DOC_HANDOVER_MAX_MB skip Redis (hosted plans cap request size); the worker
     then reads the file from disk or fetches it from object storage.
     """
+    from app.services import ingest
+    if ingest.is_inprocess():
+        # Single-container mode: index right here in the background. No Redis
+        # hand-off is needed because the file is already on this disk.
+        progress.report(doc_id, "queued")
+        ingest.submit_inprocess(doc_id, file_path, filename, chunk_size, chunk_overlap, storage_key=storage_key)
+        return
+
     redis_key = None
     try:
         small_enough = os.path.getsize(file_path) <= settings.DOC_HANDOVER_MAX_MB * 1024 * 1024

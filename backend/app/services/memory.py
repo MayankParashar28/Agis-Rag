@@ -1,48 +1,54 @@
-import json
-from typing import List, Dict, Any
-from app.core.redis_client import get_redis
-from app.core.logging import logger
+"""Short-term conversation memory, read from Postgres.
 
-class RedisChatMemory:
-    def __init__(self):
-        self.session_prefix = "session:"
+This was backed by Redis, which duplicated what `chat.py` already writes to the
+`messages` table on every turn. The duplication was not free: `get_history`
+swallowed any Redis error and returned `[]`, so an unreachable Redis silently
+cost the model its conversation context and follow-up questions were answered
+as if they were the first. Postgres is the system of record for messages, so
+read from it and keep one copy of the truth.
+"""
+import uuid
+from typing import Any, Dict, List
+
+from sqlalchemy import case, select
+
+from app.core.database import SessionLocal
+from app.core.logging import logger
+from app.models.metrics import Message
+
+
+class ChatMemory:
+    """Recent turns of a conversation, oldest first."""
 
     async def get_history(self, session_id: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """
-        Retrieves the last `limit` messages for a session.
-        """
         try:
-            async for redis in get_redis():
-                key = f"{self.session_prefix}{session_id}"
-                # Retrieve from list
-                messages_json = await redis.lrange(key, -limit, -1)
-                return [json.loads(msg) for msg in messages_json]
-        except Exception as e:
-            logger.error(f"Error fetching chat history from Redis: {str(e)}")
+            conv_id = uuid.UUID(str(session_id))
+        except (ValueError, AttributeError, TypeError):
             return []
+        try:
+            async with SessionLocal() as db:
+                rows = list((await db.execute(
+                    select(Message)
+                    .where(Message.conversation_id == conv_id)
+                    # Newest first, answer before its question on a tied
+                    # timestamp (older rows); reversed below.
+                    .order_by(Message.created_at.desc(), case((Message.sender == "user", 0), else_=1).desc())
+                    .limit(limit)
+                )).scalars().all())
+        except Exception as e:
+            logger.error(f"Could not read conversation history for {session_id}: {e}")
+            return []
+        rows.reverse()
+        return [{"sender": m.sender, "content": m.content, "citations": m.citations or []} for m in rows]
 
     async def add_message(self, session_id: str, message: Dict[str, Any]) -> None:
-        """
-        Adds a message to the session's list in Redis.
-        """
-        try:
-            async for redis in get_redis():
-                key = f"{self.session_prefix}{session_id}"
-                await redis.rpush(key, json.dumps(message))
-                # Set TTL to 7 days to auto-expire inactive sessions
-                await redis.expire(key, 3600 * 24 * 7)
-        except Exception as e:
-            logger.error(f"Error adding message to Redis: {str(e)}")
+        """No-op: `chat.py` inserts the Message row inside the request's own
+        transaction, which is what get_history reads."""
+        return None
 
     async def clear_history(self, session_id: str) -> None:
-        """
-        Clears history for a session.
-        """
-        try:
-            async for redis in get_redis():
-                key = f"{self.session_prefix}{session_id}"
-                await redis.delete(key)
-        except Exception as e:
-            logger.error(f"Error deleting chat history in Redis: {str(e)}")
+        """No-op: deleting the conversation deletes its messages."""
+        return None
 
-chat_memory = RedisChatMemory()
+
+chat_memory = ChatMemory()
